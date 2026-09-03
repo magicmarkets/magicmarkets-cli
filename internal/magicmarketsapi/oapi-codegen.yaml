@@ -1,0 +1,18 @@
+# oapi-codegen configuration for the spec-derived contract package.
+#
+# Only models are generated. The hand-written client in internal/magicmarkets keeps its
+# own curated types — see internal/magicmarketsapi/doc.go for why — and
+# contract_test.go fails if the two ever diverge.
+#
+# Input is the output of `go run ./tools/prepspec`, not the vendored spec
+# directly. Run via `make generate`.
+package: magicmarketsapi
+output: internal/magicmarketsapi/types.gen.go
+
+generate:
+  models: true
+
+output-options:
+  # Produce OrderID rather than OrderId, matching Go initialism conventions and
+  # the hand-written types in internal/magicmarkets.
+  name-normalizer: ToCamelCaseWithInitialisms

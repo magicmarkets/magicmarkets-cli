@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest a new command, flag, or capability for the CLI, MCP server, or client library.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What are you trying to do today that this would make easier or possible?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: A new flag, command, MCP tool, or behavior change. Sketch the CLI/tool shape if you have one in mind.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any existing command, flag, or workaround you're using instead, and why it falls short.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true

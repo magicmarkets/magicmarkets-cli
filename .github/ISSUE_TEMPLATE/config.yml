@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/magicmarkets/magicmarkets-cli/security/advisories/new
+    about: Please report vulnerabilities privately instead of filing a public issue.
+  - name: API reference
+    url: https://magicmarkets.com/magic-api/docs
+    about: Questions about the Magic Markets API itself, rather than this CLI.

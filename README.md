@@ -381,6 +381,17 @@ Or in a client's MCP config — `mcpServers` is the client's name for a stdio su
 }
 ```
 
+MCP support is developer-mode for now — expect some friction wiring a stdio server into a given client, and expect that to keep improving. For client-specific setup (where the config file lives, restart behavior, log locations), see that client's own docs rather than this README:
+
+- [Claude Code: Connect to tools via MCP](https://docs.claude.com/en/docs/claude-code/mcp)
+- [Model Context Protocol: Connect to local (stdio) servers](https://modelcontextprotocol.io/docs/develop/connect-local-servers) — covers Claude Desktop and other MCP clients generically
+
+Across clients, the most common snag is the `command` field: a client often spawns the subprocess with a minimal PATH, not your shell's, so a bare `"command": "magicmarkets"` can fail to resolve even though the same command works from a terminal. If that happens, swap in the absolute path instead:
+
+```bash
+which magicmarkets   # or: make where
+```
+
 ### Enabling trading
 
 **Trading is off by default.** A fresh registration is read-only, so an agent asking to place a bet will find no `place_order` tool at all. Enable it with `MAGICMARKETS_ALLOW_TRADING=1`, **replace** the existing registration, and **restart your client**:
@@ -610,26 +621,9 @@ The sibling `magicmarkets-mcp` repo targets a **different surface** — the cana
 
 ## Making a change
 
-1. **Branch.** `git checkout -b your-change`
-2. **Read the spec for anything wire-facing.** `magicmarkets api show <path>` or `docs/api-reference.md`.
-3. **Write the code.** Client changes go in `internal/magicmarkets`; the CLI and MCP layers consume it. Add a test if the change touches money, prices, or the trading gate.
-4. **Check it.**
-   ```bash
-   make fmt && make lint && make test
-   ```
-5. **Exercise it for real** if there is a runtime surface — read-only commands against the live API, or a local stub for write paths. Tests alone do not prove a command works.
-6. **Commit.** Explain *why* in the body, not just what. Note any spec quirk you had to work around, so the next person does not rediscover it.
-7. **Open a PR** describing what you verified and what you did not.
-
-### If you changed the spec
-
-```bash
-make update-spec        # fetch + regenerate
-make test               # contract_test.go tells you if the client drifted
-git diff                # review what the API actually changed
-```
-
-A contract-test failure is the system working. Fix the client to match the spec, and mention the field change in your commit message.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch → code → check → PR
+workflow, including what to do if your change touches the vendored OpenAPI
+spec.
 
 ---
 
@@ -637,4 +631,4 @@ A contract-test failure is the system working. Fix the client to match the spec,
 
 MIT — see [LICENSE](LICENSE).
 
-This is an unofficial client and is not affiliated with Magic Markets.
+Maintained by [Magic Markets](https://magicmarkets.com).

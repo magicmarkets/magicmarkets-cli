@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in the CLI, MCP server, or client library isn't working as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please don't use this for security
+        vulnerabilities — see [SECURITY.md](../../SECURITY.md) instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact command(s) run. Redact your API key if you paste `--json` output or logs.
+      placeholder: |
+        magicmarkets order place --market ... --json
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Error message, unexpected JSON, or table output. Paste as text, not a screenshot.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: magicmarkets --version
+    validations:
+      required: true
+
+  - type: input
+    id: go-version
+    attributes:
+      label: go version
+      placeholder: go version go1.25.10 darwin/arm64
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / architecture
+      placeholder: macOS 15 / arm64, Ubuntu 24.04 / amd64, etc.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true

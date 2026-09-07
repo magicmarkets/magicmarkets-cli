@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ type App struct {
 	// flag overrides, applied over the loaded config
 	apiKeyFlag string
 	apiURLFlag string
+	wsURLFlag  string
 
 	version string
 
@@ -111,12 +113,10 @@ The two-step bet flow:
 			if err != nil {
 				return err
 			}
-			if app.apiKeyFlag != "" {
-				cfg.APIKey = app.apiKeyFlag
-			}
-			if app.apiURLFlag != "" {
-				cfg.APIURL = app.apiURLFlag
-			}
+			// loadDotenv calls os.Setenv, so os.Getenv is a reliable way to tell
+			// "MAGICMARKETS_WS_URL set via env/.env" from "still a default" at
+			// this point.
+			applyFlagOverrides(cfg, app.apiKeyFlag, app.apiURLFlag, app.wsURLFlag, os.Getenv("MAGICMARKETS_WS_URL") != "")
 			app.cfg = cfg
 			app.printer.JSON = app.jsonOut
 			return nil
@@ -128,6 +128,7 @@ The two-step bet flow:
 	pf.BoolVarP(&app.verbose, "verbose", "v", false, "log requests to stderr")
 	pf.StringVar(&app.apiKeyFlag, "api-key", "", "API key (overrides MAGICMARKETS_API_KEY)")
 	pf.StringVar(&app.apiURLFlag, "api-url", "", "REST base URL (overrides MAGICMARKETS_API_URL)")
+	pf.StringVar(&app.wsURLFlag, "ws-url", "", "WebSocket stream URL (overrides MAGICMARKETS_WS_URL and any --api-url derivation)")
 
 	root.AddCommand(
 		// Account
@@ -159,6 +160,30 @@ The two-step bet flow:
 	)
 
 	return root.ExecuteContext(parent)
+}
+
+// applyFlagOverrides applies --api-key/--api-url/--ws-url on top of the
+// loaded config.
+//
+// An --api-url override re-derives WSURL from it, unless wsURLEnvSet or
+// wsURLFlag pin the stream explicitly. Without this, --api-url alone leaves
+// WSURL on whatever config.Load already derived from the un-overridden
+// APIURL (production, by default) — REST calls reach the override while the
+// stream keeps reading a different environment, with nothing to warn the
+// operator.
+func applyFlagOverrides(cfg *config.Config, apiKeyFlag, apiURLFlag, wsURLFlag string, wsURLEnvSet bool) {
+	if apiKeyFlag != "" {
+		cfg.APIKey = apiKeyFlag
+	}
+	if apiURLFlag != "" {
+		cfg.APIURL = strings.TrimRight(apiURLFlag, "/")
+		if !wsURLEnvSet {
+			cfg.WSURL = config.DeriveWSURL(cfg.APIURL)
+		}
+	}
+	if wsURLFlag != "" {
+		cfg.WSURL = strings.TrimRight(wsURLFlag, "/")
+	}
 }
 
 // ctx returns the command's context, which cobra wires to signal handling in

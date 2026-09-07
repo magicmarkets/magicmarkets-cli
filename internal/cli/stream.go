@@ -132,7 +132,9 @@ command does not reconnect; wrap it in a loop if you need that.`,
 	}
 
 	fl := cmd.Flags()
-	fl.StringSliceVar(&register, "register", nil, "events to register, as sport:event_id (repeatable)")
+	// StringArrayVar, not StringSliceVar: event_id contains commas
+	// (date,tag,seq), and StringSliceVar splits its value on them.
+	fl.StringArrayVar(&register, "register", nil, "events to register, as sport:event_id (repeatable)")
 	fl.StringSliceVar(&types, "type", nil, "only these message types, e.g. offer,order,balance")
 	fl.BoolVar(&raw, "raw", false, "print full payloads instead of one-line summaries")
 	fl.DurationVar(&duration, "for", 0, "exit after this long (0 to run until interrupted)")

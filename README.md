@@ -115,7 +115,12 @@ Resolved in this order, first match winning:
 | `MAGICMARKETS_TIMEOUT` | `30s` | Per-request timeout |
 | `MAGICMARKETS_ALLOW_TRADING` | unset (off) | Lets [`magicmarkets mcp`](#mcp-over-stdio) place bets. No effect on the CLI. |
 
-Global flags: `--json`, `--verbose`/`-v`, `--api-key`, `--api-url`.
+Global flags: `--json`, `--verbose`/`-v`, `--api-key`, `--api-url`, `--ws-url`.
+
+`--api-url` re-derives the stream endpoint from it (matching `MAGICMARKETS_WS_URL`'s
+own derivation), unless `MAGICMARKETS_WS_URL` or `--ws-url` pins it explicitly —
+so `--api-url https://staging...` doesn't leave `stream` reading production
+prices while every other command reaches staging.
 
 ---
 
@@ -613,11 +618,9 @@ Things this codebase relies on. Breaking one should be deliberate.
 
 **Branch on error codes, not strings.** Use `magicmarkets.HasCode(err, magicmarkets.CodeOrderClosed)`.
 
-## Two APIs share the "magicmarkets" name
+## Authentication
 
-This repo targets the **public v2 API**: `https://magicmarkets.com/v2`, authenticated with a single `X-Api-Key` header.
-
-The sibling `magicmarkets-mcp` repo targets a **different surface** — the canary deployment, with OAuth/Firebase tokens (`MAGIC_TOKEN` / `MAGIC_JWT`) and the `magic-cpricefeed` WebSocket. Bet-type strings differ too: canary uses real Asian handicap lines (`for,ah,h,-0.5`) while v2 uses integers equal to 4× the line (`for,ah,h,-2`). Do not copy wire details between the repos.
+This repo targets the **public v2 API**: `https://magicmarkets.com/v2`, authenticated with a single `X-Api-Key` header. That's the only auth method the public API supports today — there is no OAuth yet, and an OAuth-based solution is still in progress. `internal/mcpserver` (the stdio MCP tools) is part of this same repo and authenticates the same way, via the same client; it is not a separate deployment.
 
 ## Making a change
 

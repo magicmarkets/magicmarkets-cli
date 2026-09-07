@@ -256,8 +256,8 @@ func TestDeriveWSURL(t *testing.T) {
 		"https://host/v2/":            "wss://host/v2/stream",
 	}
 	for in, want := range cases {
-		if got := deriveWSURL(in); got != want {
-			t.Errorf("deriveWSURL(%q) = %q, want %q", in, got, want)
+		if got := DeriveWSURL(in); got != want {
+			t.Errorf("DeriveWSURL(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

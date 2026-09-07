@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"magicmarkets-cli/internal/magicmarkets"
@@ -179,7 +181,7 @@ Cashout valuations are offered on football only.`,
 
 			pos, err := client.GetPosition(c, filter, cashout)
 			if err != nil {
-				return err
+				return positionFilterError(err)
 			}
 			if a.printer.JSON {
 				return a.printer.Emit(pos)
@@ -313,12 +315,33 @@ func (a *App) renderGrid(g *magicmarkets.PositionGrid) error {
 	return a.printer.Table(headers, rows)
 }
 
+// positionFilterError adds actionable guidance to the validation_error a
+// too-broad `position` query gets back: the API computes one aggregate
+// position, and can't do that across more than one event or sport. See
+// magic-api's /v2/orders/position/ spec, non_field_errors example "filters
+// match orders from multiple events".
+func positionFilterError(err error) error {
+	var apiErr *magicmarkets.APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	for _, msg := range apiErr.ValidationErrors["non_field_errors"] {
+		if strings.Contains(msg, "match orders from multiple") {
+			return fmt.Errorf("%w\n\nposition computes one aggregate P&L, so it can't span more than one "+
+				"event or sport — narrow the query with --event and/or --sport", err)
+		}
+	}
+	return err
+}
+
 // addOrderFilterFlags wires the filter flags shared by `orders` and `position`.
 func addOrderFilterFlags(cmd *cobra.Command, f *magicmarkets.OrderFilter) {
 	fl := cmd.Flags()
 	fl.StringSliceVar(&f.Status, "status", nil, "filter by status (open, pending, done, failed)")
 	fl.StringSliceVar(&f.Sport, "sport", nil, "filter by sport code, e.g. fb")
-	fl.StringSliceVar(&f.EventID, "event", nil, "filter by event ID")
+	// StringArrayVar, not StringSliceVar: event IDs contain commas
+	// (date,tag,seq), and StringSliceVar splits its value on them.
+	fl.StringArrayVar(&f.EventID, "event", nil, "filter by event ID")
 	fl.StringSliceVar(&f.OrderType, "type", nil, "filter by order type (normal, lay, parlay)")
 	fl.StringVar(&f.DateFrom, "from", "", "start of date range (ISO 8601)")
 	fl.StringVar(&f.DateTo, "to", "", "end of date range (ISO 8601)")

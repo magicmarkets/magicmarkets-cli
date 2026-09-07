@@ -41,16 +41,24 @@ Watch for endpoints whose response does not follow the common pattern:
 - `POST /v2/betslips/{id}/refresh/` has no documented response body, so
   `RefreshBetslip` re-reads the betslip instead of decoding the refresh reply.
 
-## Two APIs share the "magicmarkets" name
+## Authentication
 
 This repo targets the **public v2 API**: `https://magicmarkets.com/v2`,
-authenticated with a single `X-Api-Key` header.
+authenticated with a single `X-Api-Key` header. That is the only auth method
+the public API supports today — there is no OAuth yet, and an OAuth-based
+solution is still in progress. `internal/mcpserver` (the stdio MCP tools) is
+part of this same repo and authenticates the same way, via the same client;
+it is not a separate deployment.
 
-The sibling `magicmarkets-mcp` repo targets a **different surface** — the canary
-deployment, with OAuth/Firebase tokens (`MAGIC_TOKEN` / `MAGIC_JWT`) and the
-`magic-cpricefeed` WebSocket. Bet-type strings differ too: canary uses real
-Asian handicap lines (`for,ah,h,-0.5`) while v2 uses integers equal to 4x the
-line (`for,ah,h,-2`). Do not copy wire details between the repos.
+## Repeatable flags that hold event IDs use StringArrayVar, not StringSliceVar
+
+`event_id` is comma-separated (`date,tag,seq`), and pflag's `StringSliceVar`
+splits its value on commas — silently turning one ID into several invalid
+ones. `--event` (`internal/cli/account.go`) and `--register`
+(`internal/cli/stream.go`) use `StringArrayVar`, which takes each `--flag`
+occurrence verbatim. Keep using `StringArrayVar` for any new flag whose
+values may contain a comma; `StringSliceVar` is fine for flags whose values
+never do (`--sport`, `--status`, `--type`).
 
 ## Layering
 

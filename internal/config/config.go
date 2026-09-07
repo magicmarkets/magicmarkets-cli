@@ -95,7 +95,7 @@ func Load() (*Config, error) {
 		cfg.Lang = DefaultLang
 	}
 	if cfg.WSURL == "" {
-		cfg.WSURL = deriveWSURL(cfg.APIURL)
+		cfg.WSURL = DeriveWSURL(cfg.APIURL)
 	}
 
 	cfg.Timeout = 30 * time.Second
@@ -157,8 +157,11 @@ func (c *Config) RedactedKey() string {
 	return strings.Repeat("*", len(c.APIKey)-4) + c.APIKey[len(c.APIKey)-4:]
 }
 
-// deriveWSURL turns an https REST base into its wss stream endpoint.
-func deriveWSURL(apiURL string) string {
+// DeriveWSURL turns an https REST base into its wss stream endpoint.
+//
+// Exported so the CLI can re-derive it after applying a --api-url override —
+// PersistentPreRunE runs after Load, so the flag isn't visible to Load itself.
+func DeriveWSURL(apiURL string) string {
 	ws := apiURL
 	switch {
 	case strings.HasPrefix(ws, "https://"):

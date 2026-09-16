@@ -1,4 +1,4 @@
-# Magic Markets API
+# MagicMarkets API
 
 > Version 0.1.0
 
@@ -19,13 +19,13 @@ X-Api-Key: <your-api-key>
 API keys are created and managed through the MagicMarkets website at
 [magicmarkets.com](https://magicmarkets.com/):
 
-1. Go to **Settings → API**.
+1. Go to **Settings -> API**.
 2. Click **Add API Key** and give it a name.
-3. Copy the key value — it is shown **once at creation**, so store it
+3. Copy the key value - it is shown **once at creation**, so store it
    somewhere safe immediately.
 
 You can also revoke or rename existing keys from the same page. There is
-no endpoint in this API to manage keys — all key management happens on
+no endpoint in this API to manage keys - all key management happens on
 the website.
 
 ### Using a key
@@ -64,19 +64,19 @@ Three concepts carry the whole flow:
 
 - **Two steps to a bet.** A *betslip* registers your interest in one
   selection (`POST /v2/betslips/`); its live quote then arrives as
-  `["pmm", …]` entries on the WebSocket. An *order* commits a stake
+  `["pmm", ...]` entries on the WebSocket. An *order* commits a stake
   against that quote (`POST /v2/orders/`). You always create the
   betslip first.
 - **`bet_type` comes from the feed.** Offers on the WebSocket carry the
-  `bet_type` string ready to use — pass it to `POST /v2/betslips/`
+  `bet_type` string ready to use - pass it to `POST /v2/betslips/`
   verbatim. You never need to construct or parse it (the grammar in
   **Sports & bet types** is reference material, not required reading).
 - **Stakes are USDT.** Wherever money appears it is a
   `["USDT", amount]` pair.
 
-### Step 1 — Check your key
+### Step 1 - Check your key
 
-Before opening the socket, prove the key works with a cheap REST call —
+Before opening the socket, prove the key works with a cheap REST call -
 the WebSocket closes silently on a bad key, so verify here first:
 
 ```bash
@@ -85,10 +85,10 @@ curl "$MAGIC_API_URL/xrates/" -H "X-Api-Key: $MAGIC_API_KEY"
 
 A `200` with `{"status": "ok", ...}` means you are good to go.
 
-### Step 2 — Connect to the stream
+### Step 2 - Connect to the stream
 
 Connect with the key as a query parameter. Every frame the server sends
-is a batch envelope `{"ts": ..., "data": [...]}` — iterate `data[]` and
+is a batch envelope `{"ts": ..., "data": [...]}` - iterate `data[]` and
 dispatch on each entry's leading type tag (see the **Streaming API**
 endpoint for the full wire format):
 
@@ -108,7 +108,7 @@ while not synced:
             synced = True
 ```
 
-After `["sync", …]` you hold the list of currently-priced events, e.g.:
+After `["sync", ...]` you hold the list of currently-priced events, e.g.:
 
 ```json
 ["event", {"event_type": "normal", "sport": "fb",
@@ -119,10 +119,10 @@ After `["sync", …]` you hold the list of currently-priced events, e.g.:
   "start_time": "2026-06-15T15:00:00Z"}]
 ```
 
-### Step 3 — Register for offers on an event
+### Step 3 - Register for offers on an event
 
-Pick an event and register. The server replies with one `["offer", …]`
-per bet type (the snapshot), then an ok `["response", …]`:
+Pick an event and register. The server replies with one `["offer", ...]`
+per bet type (the snapshot), then an ok `["response", ...]`:
 
 ```python
 event = events[0]
@@ -142,12 +142,12 @@ while not registered:
 ```
 
 (Registering an event that has not yet appeared in the sync stream is
-not an error — you just get an empty snapshot, and offers start flowing
+not an error - you just get an empty snapshot, and offers start flowing
 if the event becomes priced. Prefer event ids you saw in the sync
 stream.) From now on the full offer set is re-broadcast whenever this
 event's prices change.
 
-### Step 4 — Read the bet_type off an offer
+### Step 4 - Read the bet_type off an offer
 
 Each offer is one priced selection. Everything the next step needs is
 already in it:
@@ -167,14 +167,14 @@ already in it:
 ```
 
 `price_list` is sorted by price descending; `min` is `null` when there
-is no minimum stake. Pick a priced offer — its `sport`, `event_id` and
+is no minimum stake. Pick a priced offer - its `sport`, `event_id` and
 `bet_type` are everything the next step needs:
 
 ```python
 offer = next(o for o in offers if o["price_list"])
 ```
 
-### Step 5 — Create a betslip
+### Step 5 - Create a betslip
 
 Quote the selection by passing the offer's fields through verbatim:
 
@@ -192,11 +192,11 @@ betslip = requests.post(f"{API}/betslips/", headers=HEADERS, json={
 }).json()["data"]
 ```
 
-The response registers the betslip — note the `betslip_id` and the
+The response registers the betslip - note the `betslip_id` and the
 `expiry_ts` (betslips are short-lived; re-create one that expires).
 Do not expect prices in this response: your private quote arrives on
-the WebSocket you already hold open, as `["pmm", …]` entries carrying
-your `betslip_id` — typically within a couple of seconds, refreshed
+the WebSocket you already hold open, as `["pmm", ...]` entries carrying
+your `betslip_id` - typically within a couple of seconds, refreshed
 while the betslip stays open:
 
 ```python
@@ -223,15 +223,15 @@ while quote is None:
 }]
 ```
 
-The `price_list` uses the same format as offers — prices descending,
+The `price_list` uses the same format as offers - prices descending,
 stakes in USDT. A pmm whose `price_list` stays empty means there is no
-liquidity for this selection right now — pick another offer and
+liquidity for this selection right now - pick another offer and
 re-quote.
 
 If you are not holding the stream open, poll
 `GET /v2/betslips/{betslip_id}/` until `price_list` populates.
 
-### Step 6 — Place an order
+### Step 6 - Place an order
 
 Commit a stake at one of the quoted prices. Three fields are
 required (`betslip_id`, `price`, `stake`); `duration` is the order's
@@ -248,7 +248,7 @@ order = requests.post(f"{API}/orders/", headers=HEADERS, json={
 }).json()["data"]
 ```
 
-The response confirms acceptance — `order_id` and `status: "open"`
+The response confirms acceptance - `order_id` and `status: "open"`
 (abridged; `bets` appear on the subsequent updates as the order fills):
 
 ```json
@@ -266,11 +266,11 @@ The response confirms acceptance — `order_id` and `status: "open"`
 }
 ```
 
-### Step 7 — Watch the order on the WebSocket
+### Step 7 - Watch the order on the WebSocket
 
 Order updates arrive on the socket you already hold open, as
-`["order", …]` and `["bet", …]` entries in the same envelopes as
-offers. An order moves `open → pending → done | failed`; when it
+`["order", ...]` and `["bet", ...]` entries in the same envelopes as
+offers. An order moves `open -> pending -> done | failed`; when it
 closes, `price`, `stake` and `profit_loss` are filled in:
 
 ```python
@@ -284,7 +284,7 @@ while True:
                 raise SystemExit(0)
 ```
 
-Note that a `done` order is filled, not settled — the final
+Note that a `done` order is filled, not settled - the final
 `profit_loss` lands after the event finishes. To re-check an order
 later (e.g. after a restart), `GET /v2/orders/{order_id}/` returns the
 same object on demand.
@@ -292,11 +292,11 @@ same object on demand.
 ### Handling errors
 
 Always check `status` before reading `data`. REST errors use the
-envelope from the **Errors** section below — `validation_error`
+envelope from the **Errors** section below - `validation_error`
 bodies name the offending field (e.g. `bet_type: ["invalid_bet_type"]`),
 and on `429` honour `data.retry_after` (the limits are listed under
 **Rate limiting**). WebSocket errors arrive
-in-band as `["response", {"status": "error", …}]` entries; the reason table and the
+in-band as `["response", {"status": "error", ...}]` entries; the reason table and the
 silent-close cases are documented on the **Streaming API** endpoint.
 
 ### Complete example
@@ -312,11 +312,11 @@ API = os.environ["MAGIC_API_URL"]
 KEY = os.environ["MAGIC_API_KEY"]
 HEADERS = {"X-Api-Key": KEY}
 
-# 1. verify the key via REST first — the socket closes silently on a bad key
+# 1. verify the key via REST first - the socket closes silently on a bad key
 requests.get(f"{API}/xrates/", headers=HEADERS).raise_for_status()
 
 with connect(f"{os.environ['MAGIC_WS_URL']}?api_key={KEY}") as ws:
-    # 2. initial sync: collect events until ["sync", …]
+    # 2. initial sync: collect events until ["sync", ...]
     events, synced = [], False
     while not synced:
         frame = json.loads(ws.recv())
@@ -414,7 +414,7 @@ On error:
 { "status": "error", "code": "<code>", "data": <details> }
 ```
 
-`data` may be `null`, a string, or an object — depending on the code. See
+`data` may be `null`, a string, or an object - depending on the code. See
 the **Errors** section below for the most common shapes.
 
 ## Errors
@@ -434,11 +434,11 @@ category; `code` narrows it down.
 | 404 | `not_found` | The addressed resource (betslip, order, heartbeat, token, session) does not exist or is not visible to this key. |
 | 409 | `order_already_created` | A `request_uuid` from `POST /v2/orders/` was reused. `data` includes the existing `order_id`. |
 | 409 | `limit_reached` | A per-customer cap was hit (e.g. maximum API tokens). `data.detail` describes the cap. |
-| 429 | `throttled` | Rate limit hit — see **Rate limiting** below. `data` is `{ "message": "...", "retry_after": <seconds> }` and a `Retry-After` header is sent. |
+| 429 | `throttled` | Rate limit hit - see **Rate limiting** below. `data` is `{ "message": "...", "retry_after": <seconds> }` and a `Retry-After` header is sent. |
 | 500 | `server_error` | Unexpected internal error. `data` is `["An error has occurred, token:", "<token>"]`; quote the token if you contact support. |
-| 503 | (no body envelope) | magic-api could not reach the upstream — body is `{ "detail": "Service unavailable" }`. |
+| 503 | (no body envelope) | magic-api could not reach the upstream - body is `{ "detail": "Service unavailable" }`. |
 
-For `validation_error` responses, branch on the inner reason — the
+For `validation_error` responses, branch on the inner reason - the
 keys of `data.validation_errors` (`non_field_errors` for cross-field
 rejections, otherwise the offending field name). Each endpoint
 documents the concrete codes it emits next to its 400 response.
@@ -446,7 +446,7 @@ documents the concrete codes it emits next to its 400 response.
 ## Rate limiting
 
 Limits are per **account**: all of an account's API keys draw from
-one budget. The window is sliding — capacity frees up as earlier
+one budget. The window is sliding - capacity frees up as earlier
 requests age out, with no calendar-aligned reset.
 
 | Applies to | Limit |
@@ -458,7 +458,7 @@ requests age out, with no calendar-aligned reset.
 The placement rows are dedicated budgets: a `POST /v2/betslips/` or
 `POST /v2/orders/` call counts only against its own limit, not the
 general one. There are no daily caps, and these are the only rate
-limits — no separate per-IP limit applies.
+limits - no separate per-IP limit applies.
 
 A rejected request gets a `429` `throttled` error with the wait in
 `Retry-After` and `data.retry_after` (integer seconds).
@@ -467,7 +467,7 @@ The WebSocket stream has no message-rate limit; its connection-level
 limits (registered-event cap, slow-reader disconnect) are documented
 on the **Streaming API** endpoint.
 
-Limits can be adjusted per account — contact support if your
+Limits can be adjusted per account - contact support if your
 integration needs more headroom.
 
 ## Currencies
@@ -569,7 +569,7 @@ are short, opaque-looking strings whose grammar is described here.
 On accumulator (parlay) orders and betslips, `sport` is the literal
 string `parlay` and the per-leg sport sits inside each `legs[]` entry.
 
-Treat the table above as informational, not as a closed enum — new
+Treat the table above as informational, not as a closed enum - new
 sports are added over time. Do not hard-fail on unknown codes.
 
 ### Bet type grammar
@@ -577,13 +577,13 @@ sports are added over time. Do not hard-fail on unknown codes.
 `bet_type` is a comma-separated string. The first token is the
 direction:
 
-- `for` — back the outcome (you win if it happens).
-- `against` — lay the outcome (you win if it doesn't).
+- `for` - back the outcome (you win if it happens).
+- `against` - lay the outcome (you win if it doesn't).
 
 The remaining tokens identify the market and its parameters.
 **Handicaps always refer to the home team.**
 
-**Asian handicap lines are integers equal to 4 × the actual line.**
+**Asian handicap lines are integers equal to 4 x the actual line.**
 This keeps the wire format integer-only across `0.25`-step lines:
 
 | Wire integer | Real line |
@@ -602,12 +602,12 @@ Match result:
 | Bet type | Meaning |
 |----------|---------|
 | `for,h` / `for,d` / `for,a` | Home / Draw / Away win |
-| `for,sd` | Score draw (any non-0–0 draw) |
+| `for,sd` | Score draw (any non-0-0 draw) |
 | `for,win_90,h` | Home wins in 90 min (excluding extra time) |
 | `for,dnb,h` | Home win, void if draw (draw-no-bet) |
 | `for,hnb,a` | Away win, void if home wins (home-no-bet) |
 | `for,anb,h` | Home win, void if away wins (away-no-bet) |
-| `for,ml,h` | Moneyline — home wins, draw is void |
+| `for,ml,h` | Moneyline - home wins, draw is void |
 | `for,dc,h,d` | Double chance: home or draw |
 | `for,uswin,h` | US-style home win (draw is half-stake split) |
 | `for,awdw,h` | Asian win/draw/win |
@@ -622,12 +622,12 @@ Goals (totals):
 | `for,overeq,3` / `for,undereq,3` | Over/under integer line, inclusive |
 | `for,exact_total,3` | Exactly 3 goals |
 | `for,exact_total,3,inf` | 3 or more goals |
-| `for,gr,1,3` | Goal range 1–3 inclusive (use `inf` for ∞) |
-| `for,teamgr,h,0,2` | Home team scores 0–2 |
+| `for,gr,1,3` | Goal range 1-3 inclusive (use `inf` for infinity) |
+| `for,teamgr,h,0,2` | Home team scores 0-2 |
 | `for,odd` / `for,even` | Total goals odd / even |
 | `for,odd,h` / `for,even,a` | Per-team odd / even |
 
-Asian handicaps (lines as 4 × the actual line):
+Asian handicaps (lines as 4 x the actual line):
 
 | Bet type | Meaning |
 |----------|---------|
@@ -640,18 +640,18 @@ Correct score and margins:
 
 | Bet type | Meaning |
 |----------|---------|
-| `for,cs,2,1` | Correct score 2–1 |
-| `for,othercs,3,3` | Any score outside `home ≤ 3 AND away ≤ 3` |
+| `for,cs,2,1` | Correct score 2-1 |
+| `for,othercs,3,3` | Any score outside `home <= 3 AND away <= 3` |
 | `for,othercs,1,1,3,3` | Any score outside both ranges |
 | `for,wm,h,2,2` | Home wins by exactly 2 |
 | `for,wm,h,2,inf` | Home wins by 2+ |
 | `for,wmo,h,1,2.5` | Home wins by 1 + over 2.5 goals |
 | `for,awm,1` | Absolute margin 1 (either side) |
-| `for,wg,h,2` | Home wins and scores ≥ 2 |
+| `for,wg,h,2` | Home wins and scores >= 2 |
 | `for,quatro,h,o,2.5` | Home wins AND over 2.5 goals |
 | `for,moou,h,over,2.5` | Match-result + over/under combo |
 | `for,mo_both_score,h,yes` | Home wins AND both teams score |
-| `for,aou,h,3` | Betfair "any other unquoted", home, max draw at 3–3 |
+| `for,aou,h,3` | Betfair "any other unquoted", home, max draw at 3-3 |
 
 Score / clean sheet:
 
@@ -673,17 +673,17 @@ Tennis bet types include a period and a void rule:
 for,tset,<period>,<void_rule>,<unit>[,<market>,<args>...]
 ```
 
-- `<period>` — `1`–`5` (a specific set) or `all` (whole match).
-- `<void_rule>` — `vwhole`, `vsetN`, `vgameN` — when the bet voids
+- `<period>` - `1`-`5` (a specific set) or `all` (whole match).
+- `<void_rule>` - `vwhole`, `vsetN`, `vgameN` - when the bet voids
   if a player retires.
-- `<unit>` — `set` or `game`, optionally followed by a market and args.
+- `<unit>` - `set` or `game`, optionally followed by a market and args.
 
 Examples:
 
-- `for,tset,all,vset1,p1` — player 1 to win the match (voids unless
+- `for,tset,all,vset1,p1` - player 1 to win the match (voids unless
   set 1 completes).
-- `for,tset,1,vwhole,p1` — player 1 to win set 1.
-- `for,tset,all,vwhole,game,ahover,62` — total games in the match
+- `for,tset,1,vwhole,p1` - player 1 to win set 1.
+- `for,tset,all,vwhole,game,ahover,62` - total games in the match
   over 15.5.
 
 ### Time-period sports (other than tennis)
@@ -692,12 +692,12 @@ Bets on a specific period of a match use one of these tokens:
 
 | Token | Meaning |
 |-------|---------|
-| `tp,<period>` | Generic period — `<period>` is `all`, `reg`, or `1`–`9` |
+| `tp,<period>` | Generic period - `<period>` is `all`, `reg`, or `1`-`9` |
 | `tperiod,<n>` | Specific period (e.g. ice hockey, hand-ball) |
 | `thalf,<n>` | First or second half |
 | `tquarter,<n>` | Quarter (basketball, NFL) |
-| `tinnings,<n>` | Inning (baseball) — `<n>` is integer or `all` |
-| `tmap,<n>` | Map (esports) — `<n>` is `1`–`5` |
+| `tinnings,<n>` | Inning (baseball) - `<n>` is integer or `all` |
+| `tmap,<n>` | Map (esports) - `<n>` is `1`-`5` |
 
 The token is followed by an optional `sub,<subsport>` modifier
 (used for things like darts 180-counts) and then the regular
@@ -709,21 +709,21 @@ for,<period_token>[,sub,<subsport>],<market>[,<args>...]
 
 Examples:
 
-- `for,tp,all,ahunder,16` — total under 4.0 across all periods.
-- `for,thalf,1,ah,h,0` — Asian handicap, home 0.0, in the first half.
-- `for,tquarter,2,wdw,h` — home to win the second quarter.
-- `for,tmap,1,ahover,42` — esports, total kills on map 1 over 10.5.
-- `for,tp,all,sub,180,ahover,8` — darts, over 2.0 180s.
+- `for,tp,all,ahunder,16` - total under 4.0 across all periods.
+- `for,thalf,1,ah,h,0` - Asian handicap, home 0.0, in the first half.
+- `for,tquarter,2,wdw,h` - home to win the second quarter.
+- `for,tmap,1,ahover,42` - esports, total kills on map 1 over 10.5.
+- `for,tp,all,sub,180,ahover,8` - darts, over 2.0 180s.
 
-The legacy aliases `tall`, `treg`, `tp1`, `tp2`, … are no longer
+The legacy aliases `tall`, `treg`, `tp1`, `tp2`, ... are no longer
 accepted; use the tokens above.
 
 ### Multirunner (outright) events
 
 For events with many runners (horse racing, golf, etc.):
 
-- `for,win,<team_id>` — runner to win outright.
-- `for,top,<n>,<team_id>` — runner to finish in the top `<n>`
+- `for,win,<team_id>` - runner to win outright.
+- `for,top,<n>,<team_id>` - runner to finish in the top `<n>`
   (e.g. `for,top,3,1042` means runner 1042 to place top-3).
 
 ### Validating a bet type
@@ -753,9 +753,9 @@ Both URLs return the same schema rendered on this page.
 
 For LLMs and coding agents:
 
-- `GET /llms.txt` — index of machine-readable documentation
+- `GET /llms.txt` - index of machine-readable documentation
   ([llms.txt](https://llmstxt.org/) format)
-- `GET /docs.md` (alias `GET /llms-full.txt`) — this entire reference as a
+- `GET /docs.md` (alias `GET /llms-full.txt`) - this entire reference as a
   single Markdown document
 - `GET /docs` with an `Accept: text/markdown` header returns the Markdown
   reference instead of HTML
@@ -797,14 +797,14 @@ All paths also work behind the `/magic-api` ingress prefix
 | Name | Path | Description |
 | --- | --- | --- |
 | ApiKeyHeader | [#/components/securitySchemes/ApiKeyHeader](#componentssecurityschemesapikeyheader) | API key created from the magic-markets website |
-| Error400 | [#/components/responses/Error400](#componentsresponseserror400) | Validation failed — see `data.validation_errors`. |
-| Error401 | [#/components/responses/Error401](#componentsresponseserror401) | Authentication failed — API key missing, malformed, or rejected. |
-| Error403 | [#/components/responses/Error403](#componentsresponseserror403) | Authorization failed — the key is valid but cannot perform this action. |
+| Error400 | [#/components/responses/Error400](#componentsresponseserror400) | Validation failed - see `data.validation_errors`. |
+| Error401 | [#/components/responses/Error401](#componentsresponseserror401) | Authentication failed - API key missing, malformed, or rejected. |
+| Error403 | [#/components/responses/Error403](#componentsresponseserror403) | Authorization failed - the key is valid but cannot perform this action. |
 | Error404 | [#/components/responses/Error404](#componentsresponseserror404) | Resource not found or not visible to this key. |
 | Error429 | [#/components/responses/Error429](#componentsresponseserror429) | Rate limit hit. Honour the `Retry-After` header. |
 | Error500 | [#/components/responses/Error500](#componentsresponseserror500) | Unexpected internal error. Quote `data[1]` (the token) when contacting support. |
-| StakeTuple | [#/components/schemas/StakeTuple](#componentsschemasstaketuple) | [currency, amount] — e.g. ["USDT", 115.38] |
-| ErrorEnvelope | [#/components/schemas/ErrorEnvelope](#componentsschemaserrorenvelope) | Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses. |
+| StakeTuple | [#/components/schemas/StakeTuple](#componentsschemasstaketuple) | [currency, amount] - e.g. ["USDT", 115.38] |
+| ErrorEnvelope | [#/components/schemas/ErrorEnvelope](#componentsschemaserrorenvelope) | Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses. |
 | PriceLevel | [#/components/schemas/PriceLevel](#componentsschemaspricelevel) |  |
 | BetslipCreateResponse | [#/components/schemas/BetslipCreateResponse](#componentsschemasbetslipcreateresponse) | Create (POST) response; carries no prices. Poll GET or watch the stream for the quote. |
 | BetslipResponse | [#/components/schemas/BetslipResponse](#componentsschemasbetslipresponse) |  |
@@ -893,11 +893,11 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
 
 ```typescript
 {
-  // Sport code (required for normal/lay) — see "Sports & bet types" in the introduction.
+  // Sport code (required for normal/lay) - see "Sports & bet types" in the introduction.
   sport?: string
   // Event ID (required for normal/lay)
   event_id?: string
-  // Bet type string (required for normal/lay) — see "Sports & bet types" in the introduction.
+  // Bet type string (required for normal/lay) - see "Sports & bet types" in the introduction.
   bet_type?: string
   legs: {
     sport: string
@@ -924,11 +924,11 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
   // Create (POST) response; carries no prices. Poll GET or watch the stream for the quote.
   data: {
     betslip_id?: string
-    // Sport code — see "Sports & bet types" in the introduction.
+    // Sport code - see "Sports & bet types" in the introduction.
     sport?: string
     // Event identifier, e.g. 2026-06-15,1001,2002
     event_id?: string
-    // Bet type string — see "Sports & bet types" in the introduction.
+    // Bet type string - see "Sports & bet types" in the introduction.
     bet_type?: string
     // Human-readable label, e.g. Home, Over 1.5 (Asian)
     bet_type_description?: string
@@ -981,7 +981,7 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
 
 ```json
 {
-  "summary": "Parlay — accumulator",
+  "summary": "Parlay - accumulator",
   "value": {
     "status": "ok",
     "data": {
@@ -1046,7 +1046,7 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -1101,7 +1101,7 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -1155,7 +1155,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
 
 ```json
 {
-  "summary": "Normal — multiple price levels",
+  "summary": "Normal - multiple price levels",
   "value": {
     "status": "ok",
     "data": {
@@ -1223,7 +1223,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
 
 ```json
 {
-  "summary": "Normal — single price level",
+  "summary": "Normal - single price level",
   "value": {
     "status": "ok",
     "data": {
@@ -1268,7 +1268,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
 
 ```json
 {
-  "summary": "Lay — betting against",
+  "summary": "Lay - betting against",
   "value": {
     "status": "ok",
     "data": {
@@ -1339,7 +1339,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
 
 ```json
 {
-  "summary": "Parlay — accumulator",
+  "summary": "Parlay - accumulator",
   "value": {
     "status": "ok",
     "data": {
@@ -1437,7 +1437,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -1534,10 +1534,10 @@ search?: string
     order_id?: integer
     // Order type. `normal`, `lay` and `parlay` are the types placed through this API; `brokerage`, `cashout` and `custom` can appear on orders created by other channels. Treat it as an open set.
     order_type?: enum[normal, lay, parlay, brokerage, cashout, custom]
-    // Bet type string — see "Sports & bet types" in the introduction.
+    // Bet type string - see "Sports & bet types" in the introduction.
     bet_type?: string
     bet_type_description?: string
-    // Sport code, or `parlay` for accumulators — see "Sports & bet types" in the introduction.
+    // Sport code, or `parlay` for accumulators - see "Sports & bet types" in the introduction.
     sport?: string
     want_price?: number
     // #/components/schemas/StakeTuple
@@ -1563,10 +1563,10 @@ search?: string
         reason?: string
         response_pmm?: #/components/schemas/PriceLevel | null
       }
-      // Sport code — see "Sports & bet types" in the introduction.
+      // Sport code - see "Sports & bet types" in the introduction.
       sport?: string
       event_id?: string | null
-      // Bet type string — see "Sports & bet types" in the introduction.
+      // Bet type string - see "Sports & bet types" in the introduction.
       bet_type?: string
       ccy_rate?: number
       want_price?: number
@@ -1575,14 +1575,14 @@ search?: string
       got_stake:#/components/schemas/StakeTuple
       profit_loss?: #/components/schemas/StakeTuple | null
       reconciled?: boolean | null
-      exchange_role?: enum[maker, taker, ]
+      exchange_role?: enum[maker, taker] | null
     }[]
     user_data?: string | null
     // Order lifecycle status: open, pending, failed, partial_void, full_void, done, or reconciled
     status?: string
     keep_open_ir?: boolean
     // Exchange interaction mode as passed at creation; null on older orders
-    exchange_mode?: enum[make_and_take, take_only, dark, ]
+    exchange_mode?: enum[make_and_take, take_only, dark] | null
     // Achieved price (null while open)
     price?: number | null
     // Aggregate stake across matched bets
@@ -1662,10 +1662,10 @@ Places a new order on an existing betslip.
     order_id?: integer
     // Order type. `normal`, `lay` and `parlay` are the types placed through this API; `brokerage`, `cashout` and `custom` can appear on orders created by other channels. Treat it as an open set.
     order_type?: enum[normal, lay, parlay, brokerage, cashout, custom]
-    // Bet type string — see "Sports & bet types" in the introduction.
+    // Bet type string - see "Sports & bet types" in the introduction.
     bet_type?: string
     bet_type_description?: string
-    // Sport code, or `parlay` for accumulators — see "Sports & bet types" in the introduction.
+    // Sport code, or `parlay` for accumulators - see "Sports & bet types" in the introduction.
     sport?: string
     want_price?: number
     // #/components/schemas/StakeTuple
@@ -1691,10 +1691,10 @@ Places a new order on an existing betslip.
         reason?: string
         response_pmm?: #/components/schemas/PriceLevel | null
       }
-      // Sport code — see "Sports & bet types" in the introduction.
+      // Sport code - see "Sports & bet types" in the introduction.
       sport?: string
       event_id?: string | null
-      // Bet type string — see "Sports & bet types" in the introduction.
+      // Bet type string - see "Sports & bet types" in the introduction.
       bet_type?: string
       ccy_rate?: number
       want_price?: number
@@ -1703,14 +1703,14 @@ Places a new order on an existing betslip.
       got_stake:#/components/schemas/StakeTuple
       profit_loss?: #/components/schemas/StakeTuple | null
       reconciled?: boolean | null
-      exchange_role?: enum[maker, taker, ]
+      exchange_role?: enum[maker, taker] | null
     }[]
     user_data?: string | null
     // Order lifecycle status: open, pending, failed, partial_void, full_void, done, or reconciled
     status?: string
     keep_open_ir?: boolean
     // Exchange interaction mode as passed at creation; null on older orders
-    exchange_mode?: enum[make_and_take, take_only, dark, ]
+    exchange_mode?: enum[make_and_take, take_only, dark] | null
     // Achieved price (null while open)
     price?: number | null
     // Aggregate stake across matched bets
@@ -1727,7 +1727,7 @@ Places a new order on an existing betslip.
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -1739,12 +1739,12 @@ Places a new order on an existing betslip.
 
 - 403 undefined
 
-- 409 Idempotency conflict — `request_uuid` already used
+- 409 Idempotency conflict - `request_uuid` already used
 
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -1764,7 +1764,7 @@ Places a new order on an existing betslip.
 Order updates
 
 - Description  
-Returns orders updated within the given time range. Both `updated_at_from` and `updated_at_to` must be **at least 60 seconds in the past**, and the window (`updated_at_to − updated_at_from`) must not exceed **70 minutes**. For longer syncs, page through successive 70-minute windows.
+Returns orders updated within the given time range. Both `updated_at_from` and `updated_at_to` must be **at least 60 seconds in the past**, and the window (`updated_at_to - updated_at_from`) must not exceed **70 minutes**. For longer syncs, page through successive 70-minute windows.
 
 #### Parameters(Query)
 
@@ -1789,10 +1789,10 @@ updated_at_to: string
     order_id?: integer
     // Order type. `normal`, `lay` and `parlay` are the types placed through this API; `brokerage`, `cashout` and `custom` can appear on orders created by other channels. Treat it as an open set.
     order_type?: enum[normal, lay, parlay, brokerage, cashout, custom]
-    // Bet type string — see "Sports & bet types" in the introduction.
+    // Bet type string - see "Sports & bet types" in the introduction.
     bet_type?: string
     bet_type_description?: string
-    // Sport code, or `parlay` for accumulators — see "Sports & bet types" in the introduction.
+    // Sport code, or `parlay` for accumulators - see "Sports & bet types" in the introduction.
     sport?: string
     want_price?: number
     // #/components/schemas/StakeTuple
@@ -1818,10 +1818,10 @@ updated_at_to: string
         reason?: string
         response_pmm?: #/components/schemas/PriceLevel | null
       }
-      // Sport code — see "Sports & bet types" in the introduction.
+      // Sport code - see "Sports & bet types" in the introduction.
       sport?: string
       event_id?: string | null
-      // Bet type string — see "Sports & bet types" in the introduction.
+      // Bet type string - see "Sports & bet types" in the introduction.
       bet_type?: string
       ccy_rate?: number
       want_price?: number
@@ -1830,14 +1830,14 @@ updated_at_to: string
       got_stake:#/components/schemas/StakeTuple
       profit_loss?: #/components/schemas/StakeTuple | null
       reconciled?: boolean | null
-      exchange_role?: enum[maker, taker, ]
+      exchange_role?: enum[maker, taker] | null
     }[]
     user_data?: string | null
     // Order lifecycle status: open, pending, failed, partial_void, full_void, done, or reconciled
     status?: string
     keep_open_ir?: boolean
     // Exchange interaction mode as passed at creation; null on older orders
-    exchange_mode?: enum[make_and_take, take_only, dark, ]
+    exchange_mode?: enum[make_and_take, take_only, dark] | null
     // Achieved price (null while open)
     price?: number | null
     // Aggregate stake across matched bets
@@ -1854,7 +1854,7 @@ updated_at_to: string
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -1936,10 +1936,10 @@ Returns a single order by ID with all stakes in USDT.
     order_id?: integer
     // Order type. `normal`, `lay` and `parlay` are the types placed through this API; `brokerage`, `cashout` and `custom` can appear on orders created by other channels. Treat it as an open set.
     order_type?: enum[normal, lay, parlay, brokerage, cashout, custom]
-    // Bet type string — see "Sports & bet types" in the introduction.
+    // Bet type string - see "Sports & bet types" in the introduction.
     bet_type?: string
     bet_type_description?: string
-    // Sport code, or `parlay` for accumulators — see "Sports & bet types" in the introduction.
+    // Sport code, or `parlay` for accumulators - see "Sports & bet types" in the introduction.
     sport?: string
     want_price?: number
     // #/components/schemas/StakeTuple
@@ -1965,10 +1965,10 @@ Returns a single order by ID with all stakes in USDT.
         reason?: string
         response_pmm?: #/components/schemas/PriceLevel | null
       }
-      // Sport code — see "Sports & bet types" in the introduction.
+      // Sport code - see "Sports & bet types" in the introduction.
       sport?: string
       event_id?: string | null
-      // Bet type string — see "Sports & bet types" in the introduction.
+      // Bet type string - see "Sports & bet types" in the introduction.
       bet_type?: string
       ccy_rate?: number
       want_price?: number
@@ -1977,14 +1977,14 @@ Returns a single order by ID with all stakes in USDT.
       got_stake:#/components/schemas/StakeTuple
       profit_loss?: #/components/schemas/StakeTuple | null
       reconciled?: boolean | null
-      exchange_role?: enum[maker, taker, ]
+      exchange_role?: enum[maker, taker] | null
     }[]
     user_data?: string | null
     // Order lifecycle status: open, pending, failed, partial_void, full_void, done, or reconciled
     status?: string
     keep_open_ir?: boolean
     // Exchange interaction mode as passed at creation; null on older orders
-    exchange_mode?: enum[make_and_take, take_only, dark, ]
+    exchange_mode?: enum[make_and_take, take_only, dark] | null
     // Achieved price (null while open)
     price?: number | null
     // Aggregate stake across matched bets
@@ -2005,7 +2005,7 @@ Returns a single order by ID with all stakes in USDT.
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -2040,10 +2040,10 @@ Retrieve an order using the `request_uuid` from order creation instead of the or
     order_id?: integer
     // Order type. `normal`, `lay` and `parlay` are the types placed through this API; `brokerage`, `cashout` and `custom` can appear on orders created by other channels. Treat it as an open set.
     order_type?: enum[normal, lay, parlay, brokerage, cashout, custom]
-    // Bet type string — see "Sports & bet types" in the introduction.
+    // Bet type string - see "Sports & bet types" in the introduction.
     bet_type?: string
     bet_type_description?: string
-    // Sport code, or `parlay` for accumulators — see "Sports & bet types" in the introduction.
+    // Sport code, or `parlay` for accumulators - see "Sports & bet types" in the introduction.
     sport?: string
     want_price?: number
     // #/components/schemas/StakeTuple
@@ -2069,10 +2069,10 @@ Retrieve an order using the `request_uuid` from order creation instead of the or
         reason?: string
         response_pmm?: #/components/schemas/PriceLevel | null
       }
-      // Sport code — see "Sports & bet types" in the introduction.
+      // Sport code - see "Sports & bet types" in the introduction.
       sport?: string
       event_id?: string | null
-      // Bet type string — see "Sports & bet types" in the introduction.
+      // Bet type string - see "Sports & bet types" in the introduction.
       bet_type?: string
       ccy_rate?: number
       want_price?: number
@@ -2081,14 +2081,14 @@ Retrieve an order using the `request_uuid` from order creation instead of the or
       got_stake:#/components/schemas/StakeTuple
       profit_loss?: #/components/schemas/StakeTuple | null
       reconciled?: boolean | null
-      exchange_role?: enum[maker, taker, ]
+      exchange_role?: enum[maker, taker] | null
     }[]
     user_data?: string | null
     // Order lifecycle status: open, pending, failed, partial_void, full_void, done, or reconciled
     status?: string
     keep_open_ir?: boolean
     // Exchange interaction mode as passed at creation; null on older orders
-    exchange_mode?: enum[make_and_take, take_only, dark, ]
+    exchange_mode?: enum[make_and_take, take_only, dark] | null
     // Achieved price (null while open)
     price?: number | null
     // Aggregate stake across matched bets
@@ -2105,7 +2105,7 @@ Retrieve an order using the `request_uuid` from order creation instead of the or
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -2122,7 +2122,7 @@ Retrieve an order using the `request_uuid` from order creation instead of the or
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -2142,7 +2142,7 @@ Retrieve an order using the `request_uuid` from order creation instead of the or
 Close an order
 
 - Description  
-Close (cancel) a single open order. The order's lifecycle update is delivered on the WebSocket as an `["order", …]` entry with `closed: true` and `close_reason: "cancelled"`. The response `data` field is always `null`.
+Close (cancel) a single open order. The order's lifecycle update is delivered on the WebSocket as an `["order", ...]` entry with `closed: true` and `close_reason: "cancelled"`. The response `data` field is always `null`.
 
 #### Responses
 
@@ -2155,7 +2155,7 @@ Close (cancel) a single open order. The order's lifecycle update is delivered on
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -2233,7 +2233,7 @@ Request cancellation of all open orders. Optionally filter by sport and/or event
 
 ```typescript
 {
-  // Only close orders on this sport — see "Sports & bet types" in the introduction.
+  // Only close orders on this sport - see "Sports & bet types" in the introduction.
   sport?: string
   // Only close orders on this event (requires sport)
   event_id?: string
@@ -2372,7 +2372,7 @@ include_cashout_info?: boolean
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -2511,12 +2511,12 @@ Open a new heartbeat timer. If the timer expires before being refreshed or cance
 }
 ```
 
-- 400 `timeout` outside the 10–300 second range
+- 400 `timeout` outside the 10-300 second range
 
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -2604,7 +2604,7 @@ Returns information about a single heartbeat.
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -2649,7 +2649,7 @@ Cancel an active heartbeat. Cancelling disarms the timer without closing any ord
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -2696,7 +2696,7 @@ Extend the heartbeat expiration timeout. A heartbeat that has already expired ca
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -2788,7 +2788,7 @@ away_team?: string
 `application/json`
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -2812,7 +2812,7 @@ away_team?: string
 WebSocket stream
 
 - Description  
-**WebSocket endpoint** — upgrade an HTTP connection to receive  
+**WebSocket endpoint** - upgrade an HTTP connection to receive  
 real-time prices. This is a separate service from the REST API.  
   
 ### Connection  
@@ -2839,54 +2839,54 @@ directly.
 **Every** frame sent by the server is a batch envelope:  
   
 ```json  
-{"ts": 1586042815.269000, "data": [ <message>, <message>, … ]}  
+{"ts": 1586042815.269000, "data": [ <message>, <message>, ... ]}  
 ```  
   
-- `ts` — Unix timestamp in seconds with microsecond precision,  
+- `ts` - Unix timestamp in seconds with microsecond precision,  
   stamped by the server when the frame is written.  
-- `data` — one or more messages. The `["offer", …]`,  
-  `["response", …]`, `["event", …]`,  
-  `["remove_event", …]`, `["sync", …]`, live-event-state and  
+- `data` - one or more messages. The `["offer", ...]`,  
+  `["response", ...]`, `["event", ...]`,  
+  `["remove_event", ...]`, `["sync", ...]`, live-event-state and  
   account-update arrays shown below are the individual `data[]`  
   entries; they are never sent as bare top-level frames.  
   
-Multiple messages may be batched into a single envelope — e.g. a  
-register snapshot and its ok `["response", …]` together, or offers alongside  
+Multiple messages may be batched into a single envelope - e.g. a  
+register snapshot and its ok `["response", ...]` together, or offers alongside  
 account updates. Batching boundaries are not semantically  
-meaningful — iterate `data[]` and dispatch on each entry's leading  
+meaningful - iterate `data[]` and dispatch on each entry's leading  
 type tag (`entry[0]`); never rely on ordering, grouping, or a type  
 appearing exactly once per frame.  
   
 ### Initial sync  
   
 After connecting, the server sends a snapshot of the  
-currently-priced events followed by a `["sync", {…}]` marker  
+currently-priced events followed by a `["sync", {...}]` marker  
 whose payload carries the `session_id` of this stream (useful  
 when correlating with REST errors or contacting support). Each  
-event is an `["event", {…}]` entry — a flat object carrying the  
-identifiers and metadata — delivered inside the envelope:  
+event is an `["event", {...}]` entry - a flat object carrying the  
+identifiers and metadata - delivered inside the envelope:  
   
 ```json  
 {"ts": 1586042815.269000, "data": [  
   ["event", {"event_type": "normal", "sport": "fb", "event_id": "2026-06-15,1001,2002", "competition_id": 1, "competition_name": "England Premier League", "competition_country": "XE", "home": "Arsenal", "away": "Chelsea", "event_name": "Arsenal vs. Chelsea", "ir_status": "pre_event", "start_time": "2026-06-15T15:00:00Z"}],  
   ["event", {"event_type": "normal", "sport": "tn", "event_id": "2026-06-16,501,502", ...}],  
   ["event", {"event_type": "multirunner", "sport": "af", "event_id": "2026-02-23,multirunner,100364405", "competition_id": 545, "competition_name": "USA NFL", "competition_country": "US", "teams": [{"team_id": 21614, "name": "Arizona Cardinals"}, {"team_id": 21615, "name": "Atlanta Falcons"}], "event_name": "NFL Super Bowl Winner", "start_time": "2026-02-23T21:00:00Z", "end_time": "2027-02-14T21:00:00Z"}],  
-  ["sync", {"session_id": "…"}]  
+  ["sync", {"session_id": "..."}]  
 ]}  
 ```  
   
 Two event shapes appear. A `normal` (match) event carries `home` and  
 `away`. A `multirunner` (outright / futures) event has no `home`/`away`;  
-instead it carries a `teams` array (`[{"team_id", "name"}, …]`, one per  
+instead it carries a `teams` array (`[{"team_id", "name"}, ...]`, one per  
 runner) and an `end_time`. Dispatch on `event_type`; read the runner list  
 from `teams` for multirunners.  
   
 The snapshot is not the full fixture list: it contains only events  
 that currently have live prices. The dump may span several  
-envelopes; `["sync", …]` is the last `data[]` entry of the final one.  
-From then on, changed events are re-sent as `["event", {…}]`  
+envelopes; `["sync", ...]` is the last `data[]` entry of the final one.  
+From then on, changed events are re-sent as `["event", {...}]`  
 entries, and an event whose prices disappear is delivered as  
-`["remove_event", {"sport": …, "event_id": …, …}]`.  
+`["remove_event", {"sport": ..., "event_id": ..., ...}]`.  
   
 ### Live event state  
   
@@ -2894,21 +2894,21 @@ Events that are in play may additionally produce state updates as
 `data[]` entries. Payloads are sport-specific; the football shapes:  
   
 ```json  
-["event_time", {"sport": "fb", "event_id": "…", "time": ["1h", 23]}]  
-["event_score", {"sport": "fb", "event_id": "…", "score": [1, 0]}]  
-["event_red_cards", {"sport": "fb", "event_id": "…", "score": [0, 1]}]  
+["event_time", {"sport": "fb", "event_id": "...", "time": ["1h", 23]}]  
+["event_score", {"sport": "fb", "event_id": "...", "score": [1, 0]}]  
+["event_red_cards", {"sport": "fb", "event_id": "...", "score": [0, 1]}]  
 ```  
   
-- `time` — `[period, minutes]`, where the football periods are  
+- `time` - `[period, minutes]`, where the football periods are  
   `"1h"`, `"2h"` and `"ht"`; `null` when no clock is available.  
-- `score` — `[home, away]` (the `event_red_cards` payload reuses  
+- `score` - `[home, away]` (the `event_red_cards` payload reuses  
   the `score` key for the red-card counts).  
-- `["ir_info", {…}]` carries a full in-running state snapshot for  
+- `["ir_info", {...}]` carries a full in-running state snapshot for  
   an event (fields vary by sport), and  
-  `["remove_ir_info", {"sport": …, "event_id": …}]` signals the  
-  state is gone — treat both as informational.  
-- `["event_exchange_dark_liquidity", {"sport": …, "event_id": …,  
-  "lines": {…}}]` — a rough estimate of additional liquidity  
+  `["remove_ir_info", {"sport": ..., "event_id": ...}]` signals the  
+  state is gone - treat both as informational.  
+- `["event_exchange_dark_liquidity", {"sport": ..., "event_id": ...,  
+  "lines": {...}}]` - a rough estimate of additional liquidity  
   available per line on the event, beyond the published offers.  
   Informational.  
   
@@ -2919,22 +2919,22 @@ Events that are in play may additionally produce state updates as
 ["register_event", "<sport>", "<event_id>"]  
 ```  
   
-On success the server immediately sends one `["offer", …]` per  
-active bet type on the event (the snapshot), then an ok response —  
-typically batched in one envelope:  
-`{"ts": …, "data": [["offer", {…}], ["offer", {…}],  
+On success the server immediately sends one `["offer", ...]` per  
+active bet type on the event (the snapshot), then an ok  
+response - typically batched in one envelope:  
+`{"ts": ..., "data": [["offer", {...}], ["offer", {...}],  
 ["response", {"status": "ok", "data": null}]]}`.  
 From then on, whenever the offers on the event change, the  
 full current set is re-broadcast (with the affected bet types  
 updated) and any bet type that has lost all liquidity is  
-delivered as `["remove_offer", …]`.  
+delivered as `["remove_offer", ...]`.  
   
 **Unregister:**  
 ```json  
 ["unregister_event", "<sport>", "<event_id>"]  
 ```  
 Server responds with `["response", {"status": "ok", "data":  
-null}]` — also when the event was not registered (unregistering is  
+null}]` - also when the event was not registered (unregistering is  
 idempotent). No further `offer` / `remove_offer` messages are sent  
 for that event.  
   
@@ -2956,10 +2956,10 @@ the session is registered for:
 **Keepalive (echo):**  
 ```json  
 ["echo", "any-payload"]  
-→ ["response", {"status": "ok", "data": ["any-payload"]}]  
+-> ["response", {"status": "ok", "data": ["any-payload"]}]  
 ```  
 Arguments are optional, may be any JSON values, and are echoed  
-back verbatim in `data`. The server also sends an `["info", …]`  
+back verbatim in `data`. The server also sends an `["info", ...]`  
 entry every few seconds, so an idle connection still receives  
 regular traffic.  
   
@@ -2969,7 +2969,7 @@ Each `offer` describes the available stake at every price for one
 `(sport, event_id, bet_type)` triple. The `bet_type` string fully  
 identifies the market side (it encodes the market, handicap,  
 outcome and for/against direction), so each triple is a distinct,  
-independently-updated offer — for and against on the same  
+independently-updated offer - for and against on the same  
 selection arrive as two separate `offer` messages with different  
 `bet_type` values.  
   
@@ -2992,9 +2992,9 @@ Each `price_list` entry is
 stakes are `["USDT", amount]` arrays. The `min` and `max` keys are  
 always present:  
   
-- `min` — the minimum stake accepted at that price; `null` when  
+- `min` - the minimum stake accepted at that price; `null` when  
   there is no minimum.  
-- `max` — the total stake available at that price. Always a  
+- `max` - the total stake available at that price. Always a  
   `["USDT", amount]` pair (a price with no available stake is not  
   published).  
   
@@ -3002,7 +3002,7 @@ Entries are ordered by `price` (the decimal odds) **descending**,
 with at most one entry per price.  
   
 `remove_offer` carries only the `(sport, event_id, bet_type)`  
-triple — that bet type has no remaining liquidity for the event:  
+triple - that bet type has no remaining liquidity for the event:  
   
 ```json  
 ["remove_offer", {  
@@ -3015,8 +3015,8 @@ triple — that bet type has no remaining liquidity for the event:
 ### Account update messages  
   
 Account-level updates arrive on the same WebSocket, as plain  
-entries inside the same `{"ts": …, "data": […]}` envelope that  
-carries `offer` / `remove_offer` — siblings of the market-data  
+entries inside the same `{"ts": ..., "data": [...]}` envelope that  
+carries `offer` / `remove_offer` - siblings of the market-data  
 messages.  
   
 ```json  
@@ -3033,35 +3033,35 @@ messages.
   
 `data[]` may contain these account entry types:  
   
-- `balance`, `xrate` — amounts are in your account's native  
+- `balance`, `xrate` - amounts are in your account's native  
   currency.  
-- `order` — `want_stake`, `stake` and `profit_loss` are in USDT;  
+- `order` - `want_stake`, `stake` and `profit_loss` are in USDT;  
   each entry of nested `bets[]` follows the `bet` format.  
-- `bet` — `want_stake`, `got_stake`, `profit_loss` and  
+- `bet` - `want_stake`, `got_stake`, `profit_loss` and  
   `status.response_pmm.effective.min`/`max` are in USDT.  
-- `pmm`, `betslip` — the live quote and state of an open betslip  
+- `pmm`, `betslip` - the live quote and state of an open betslip  
   (see the Quickstart). `price_list` entries follow the same  
   `{"effective": {"price", "min", "max"}}` format as `offer`  
   messages; `price_list` and `total` are in USDT, prices sorted  
   descending.  
-- `betslip_closed` — `{"betslip_id": …, "close_reason": …}`. The  
+- `betslip_closed` - `{"betslip_id": ..., "close_reason": ...}`. The  
   betslip expired (betslips are short-lived) or was closed; no  
   further `pmm` quotes will arrive for it. Create a new betslip  
   to re-quote the selection.  
-- `info` — feed status; `registered_events` is the number of  
+- `info` - feed status; `registered_events` is the number of  
   events currently registered on this connection.  
-- `clear_events` — the server lost its upstream market data feed:  
+- `clear_events` - the server lost its upstream market data feed:  
   discard all event, offer and live-state data you hold. A fresh  
-  snapshot (events, then `["sync", …]`) follows when the feed  
+  snapshot (events, then `["sync", ...]`) follows when the feed  
   recovers.  
   
 The order, presence, and count of entry types within `data[]` are  
-not contractual — the example above shows one possible ordering  
+not contractual - the example above shows one possible ordering  
 only. Dispatch on each entry's type tag.  
   
 **`balance` message fields:**  
-- `balance`: `[currency, amount]` — current account balance in the customer's native currency.  
-- `open_stake`: `[currency, amount]` — total stake across all unsettled bets, in the same currency.  
+- `balance`: `[currency, amount]` - current account balance in the customer's native currency.  
+- `open_stake`: `[currency, amount]` - total stake across all unsettled bets, in the same currency.  
   
 ### Errors  
   
@@ -3083,12 +3083,12 @@ Codes emitted directly by the stream:
 | `already_registered` | `register_event` for an event already registered on this session. |  
 | `customer_event_limit_exceeded` | `register_event` would exceed your registered-events limit (counted across all your connections). Unregister something first. |  
 | `invalid_customer` | `register_event` while the feed does not recognise your customer record (e.g. not yet propagated after a server restart). Retry after a short backoff; contact support if it persists. |  
-| `system_error` | Transient server-side failure — retry after a short backoff. |  
+| `system_error` | Transient server-side failure - retry after a short backoff. |  
   
 Note there is no "unknown event" error: registering an event the  
 feed has no prices for succeeds with an empty snapshot, and  
 `unregister_event` of an unregistered event returns ok. Treat any  
-other code string as **opaque** — log it and retry after a short  
+other code string as **opaque** - log it and retry after a short  
 backoff.  
   
 **Authentication** is enforced at the HTTP handshake: a missing *or*  
@@ -3102,10 +3102,10 @@ socket.
 Three classes of failure drop an *established* connection silently  
 (raw TCP close, no WebSocket close frame, no in-band error):  
   
-- **Backpressure** — the client is reading too slowly and the  
+- **Backpressure** - the client is reading too slowly and the  
   server's outbound buffer overflows. Reconnect and resume.  
-- **I/O error** — any read or write failure on the socket.  
-- **Internal error** — a rare server-side failure; not  
+- **I/O error** - any read or write failure on the socket.  
+- **Internal error** - a rare server-side failure; not  
   client-triggerable and observably identical to an I/O error.  
   Reconnect with backoff.  
 
@@ -3122,9 +3122,9 @@ lang?: enum[en, ko, zh-hans] //default: en
 
 #### Responses
 
-- 101 Switching protocols — WebSocket connection established
+- 101 Switching protocols - WebSocket connection established
 
-- default Failures are delivered in-band as `["response", {"status": "error", "code": …}]` entries inside the `{"ts": …, "data": […]}` envelope on the open WebSocket, or by silent TCP close — see the **Errors** section above.
+- default Failures are delivered in-band as `["response", {"status": "error", "code": ...}]` entries inside the `{"ts": ..., "data": [...]}` envelope on the open WebSocket, or by silent TCP close - see the **Errors** section above.
 
 ## References
 
@@ -3144,7 +3144,7 @@ lang?: enum[en, ko, zh-hans] //default: en
 - application/json
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -3157,7 +3157,7 @@ lang?: enum[en, ko, zh-hans] //default: en
 - application/json
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -3170,7 +3170,7 @@ lang?: enum[en, ko, zh-hans] //default: en
 - application/json
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -3183,7 +3183,7 @@ lang?: enum[en, ko, zh-hans] //default: en
 - application/json
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -3196,7 +3196,7 @@ lang?: enum[en, ko, zh-hans] //default: en
 - application/json
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -3209,7 +3209,7 @@ lang?: enum[en, ko, zh-hans] //default: en
 - application/json
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -3226,7 +3226,7 @@ string | number[]
 ### #/components/schemas/ErrorEnvelope
 
 ```typescript
-// Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 {
   status: enum[error]
   // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
@@ -3255,11 +3255,11 @@ string | number[]
 // Create (POST) response; carries no prices. Poll GET or watch the stream for the quote.
 {
   betslip_id?: string
-  // Sport code — see "Sports & bet types" in the introduction.
+  // Sport code - see "Sports & bet types" in the introduction.
   sport?: string
   // Event identifier, e.g. 2026-06-15,1001,2002
   event_id?: string
-  // Bet type string — see "Sports & bet types" in the introduction.
+  // Bet type string - see "Sports & bet types" in the introduction.
   bet_type?: string
   // Human-readable label, e.g. Home, Over 1.5 (Asian)
   bet_type_description?: string
@@ -3306,11 +3306,11 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
   // Create (POST) response; carries no prices. Poll GET or watch the stream for the quote.
   data: {
     betslip_id?: string
-    // Sport code — see "Sports & bet types" in the introduction.
+    // Sport code - see "Sports & bet types" in the introduction.
     sport?: string
     // Event identifier, e.g. 2026-06-15,1001,2002
     event_id?: string
-    // Bet type string — see "Sports & bet types" in the introduction.
+    // Bet type string - see "Sports & bet types" in the introduction.
     bet_type?: string
     // Human-readable label, e.g. Home, Over 1.5 (Asian)
     bet_type_description?: string
@@ -3366,11 +3366,11 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
 
 ```typescript
 {
-  // Sport code (required for normal/lay) — see "Sports & bet types" in the introduction.
+  // Sport code (required for normal/lay) - see "Sports & bet types" in the introduction.
   sport?: string
   // Event ID (required for normal/lay)
   event_id?: string
-  // Bet type string (required for normal/lay) — see "Sports & bet types" in the introduction.
+  // Bet type string (required for normal/lay) - see "Sports & bet types" in the introduction.
   bet_type?: string
   legs: {
     sport: string
@@ -3510,15 +3510,15 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
 ```typescript
 {
   id?: integer
-  // Sport code — see "Sports & bet types" in the introduction.
+  // Sport code - see "Sports & bet types" in the introduction.
   sport?: string
   event_id?: string
-  // Bet type string — see "Sports & bet types" in the introduction.
+  // Bet type string - see "Sports & bet types" in the introduction.
   bet_type?: string
   bet_type_description?: string
   price?: number | null
   // Leg settlement: `w` won, `l` lost, `v` void, `v/w` win-void, `l/v` void-loss, `l/w` loss-win (half outcomes), `unknown`, or null before settlement.
-  outcome?: enum[w, l, v, v/w, l/v, l/w, unknown, ]
+  outcome?: enum[w, l, v, v/w, l/v, l/w, unknown] | null
 }[]
 ```
 
@@ -3527,15 +3527,15 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
 ```typescript
 {
   id?: integer
-  // Sport code — see "Sports & bet types" in the introduction.
+  // Sport code - see "Sports & bet types" in the introduction.
   sport?: string
   event_id?: string
-  // Bet type string — see "Sports & bet types" in the introduction.
+  // Bet type string - see "Sports & bet types" in the introduction.
   bet_type?: string
   bet_type_description?: string
   price?: number | null
   // Leg settlement: `w` won, `l` lost, `v` void, `v/w` win-void, `l/v` void-loss, `l/w` loss-win (half outcomes), `unknown`, or null before settlement.
-  outcome?: enum[w, l, v, v/w, l/v, l/w, unknown, ]
+  outcome?: enum[w, l, v, v/w, l/v, l/w, unknown] | null
 }
 ```
 
@@ -3555,10 +3555,10 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
     reason?: string
     response_pmm?: #/components/schemas/PriceLevel | null
   }
-  // Sport code — see "Sports & bet types" in the introduction.
+  // Sport code - see "Sports & bet types" in the introduction.
   sport?: string
   event_id?: string | null
-  // Bet type string — see "Sports & bet types" in the introduction.
+  // Bet type string - see "Sports & bet types" in the introduction.
   bet_type?: string
   ccy_rate?: number
   want_price?: number
@@ -3568,7 +3568,7 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
   got_stake:#/components/schemas/StakeTuple
   profit_loss?: #/components/schemas/StakeTuple | null
   reconciled?: boolean | null
-  exchange_role?: enum[maker, taker, ]
+  exchange_role?: enum[maker, taker] | null
 }
 ```
 
@@ -3579,10 +3579,10 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
   order_id?: integer
   // Order type. `normal`, `lay` and `parlay` are the types placed through this API; `brokerage`, `cashout` and `custom` can appear on orders created by other channels. Treat it as an open set.
   order_type?: enum[normal, lay, parlay, brokerage, cashout, custom]
-  // Bet type string — see "Sports & bet types" in the introduction.
+  // Bet type string - see "Sports & bet types" in the introduction.
   bet_type?: string
   bet_type_description?: string
-  // Sport code, or `parlay` for accumulators — see "Sports & bet types" in the introduction.
+  // Sport code, or `parlay` for accumulators - see "Sports & bet types" in the introduction.
   sport?: string
   want_price?: number
   // #/components/schemas/StakeTuple
@@ -3608,10 +3608,10 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
       reason?: string
       response_pmm?: #/components/schemas/PriceLevel | null
     }
-    // Sport code — see "Sports & bet types" in the introduction.
+    // Sport code - see "Sports & bet types" in the introduction.
     sport?: string
     event_id?: string | null
-    // Bet type string — see "Sports & bet types" in the introduction.
+    // Bet type string - see "Sports & bet types" in the introduction.
     bet_type?: string
     ccy_rate?: number
     want_price?: number
@@ -3620,14 +3620,14 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
     got_stake:#/components/schemas/StakeTuple
     profit_loss?: #/components/schemas/StakeTuple | null
     reconciled?: boolean | null
-    exchange_role?: enum[maker, taker, ]
+    exchange_role?: enum[maker, taker] | null
   }[]
   user_data?: string | null
   // Order lifecycle status: open, pending, failed, partial_void, full_void, done, or reconciled
   status?: string
   keep_open_ir?: boolean
   // Exchange interaction mode as passed at creation; null on older orders
-  exchange_mode?: enum[make_and_take, take_only, dark, ]
+  exchange_mode?: enum[make_and_take, take_only, dark] | null
   // Achieved price (null while open)
   price?: number | null
   // Aggregate stake across matched bets
@@ -3647,10 +3647,10 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
     order_id?: integer
     // Order type. `normal`, `lay` and `parlay` are the types placed through this API; `brokerage`, `cashout` and `custom` can appear on orders created by other channels. Treat it as an open set.
     order_type?: enum[normal, lay, parlay, brokerage, cashout, custom]
-    // Bet type string — see "Sports & bet types" in the introduction.
+    // Bet type string - see "Sports & bet types" in the introduction.
     bet_type?: string
     bet_type_description?: string
-    // Sport code, or `parlay` for accumulators — see "Sports & bet types" in the introduction.
+    // Sport code, or `parlay` for accumulators - see "Sports & bet types" in the introduction.
     sport?: string
     want_price?: number
     // #/components/schemas/StakeTuple
@@ -3676,10 +3676,10 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
         reason?: string
         response_pmm?: #/components/schemas/PriceLevel | null
       }
-      // Sport code — see "Sports & bet types" in the introduction.
+      // Sport code - see "Sports & bet types" in the introduction.
       sport?: string
       event_id?: string | null
-      // Bet type string — see "Sports & bet types" in the introduction.
+      // Bet type string - see "Sports & bet types" in the introduction.
       bet_type?: string
       ccy_rate?: number
       want_price?: number
@@ -3688,14 +3688,14 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
       got_stake:#/components/schemas/StakeTuple
       profit_loss?: #/components/schemas/StakeTuple | null
       reconciled?: boolean | null
-      exchange_role?: enum[maker, taker, ]
+      exchange_role?: enum[maker, taker] | null
     }[]
     user_data?: string | null
     // Order lifecycle status: open, pending, failed, partial_void, full_void, done, or reconciled
     status?: string
     keep_open_ir?: boolean
     // Exchange interaction mode as passed at creation; null on older orders
-    exchange_mode?: enum[make_and_take, take_only, dark, ]
+    exchange_mode?: enum[make_and_take, take_only, dark] | null
     // Achieved price (null while open)
     price?: number | null
     // Aggregate stake across matched bets
@@ -3716,10 +3716,10 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
     order_id?: integer
     // Order type. `normal`, `lay` and `parlay` are the types placed through this API; `brokerage`, `cashout` and `custom` can appear on orders created by other channels. Treat it as an open set.
     order_type?: enum[normal, lay, parlay, brokerage, cashout, custom]
-    // Bet type string — see "Sports & bet types" in the introduction.
+    // Bet type string - see "Sports & bet types" in the introduction.
     bet_type?: string
     bet_type_description?: string
-    // Sport code, or `parlay` for accumulators — see "Sports & bet types" in the introduction.
+    // Sport code, or `parlay` for accumulators - see "Sports & bet types" in the introduction.
     sport?: string
     want_price?: number
     // #/components/schemas/StakeTuple
@@ -3745,10 +3745,10 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
         reason?: string
         response_pmm?: #/components/schemas/PriceLevel | null
       }
-      // Sport code — see "Sports & bet types" in the introduction.
+      // Sport code - see "Sports & bet types" in the introduction.
       sport?: string
       event_id?: string | null
-      // Bet type string — see "Sports & bet types" in the introduction.
+      // Bet type string - see "Sports & bet types" in the introduction.
       bet_type?: string
       ccy_rate?: number
       want_price?: number
@@ -3757,14 +3757,14 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
       got_stake:#/components/schemas/StakeTuple
       profit_loss?: #/components/schemas/StakeTuple | null
       reconciled?: boolean | null
-      exchange_role?: enum[maker, taker, ]
+      exchange_role?: enum[maker, taker] | null
     }[]
     user_data?: string | null
     // Order lifecycle status: open, pending, failed, partial_void, full_void, done, or reconciled
     status?: string
     keep_open_ir?: boolean
     // Exchange interaction mode as passed at creation; null on older orders
-    exchange_mode?: enum[make_and_take, take_only, dark, ]
+    exchange_mode?: enum[make_and_take, take_only, dark] | null
     // Achieved price (null while open)
     price?: number | null
     // Aggregate stake across matched bets

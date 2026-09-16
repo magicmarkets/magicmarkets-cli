@@ -16,7 +16,7 @@ import (
 
 // Client is a Magic Markets v2 REST client.
 //
-// Every request carries the API key in the X-Api-Key header. There is no
+// Every request carries the API key in the [APIKeyHeader] header. There is no
 // request signing.
 type Client struct {
 	baseURL    string
@@ -31,6 +31,9 @@ type Client struct {
 	// Used by the --verbose flag.
 	Trace func(format string, args ...any)
 }
+
+// APIKeyHeader is the HTTP header the public v2 API uses for authentication.
+const APIKeyHeader = "X-Api-Key"
 
 // Option customises a Client.
 type Option func(*Client)
@@ -147,7 +150,7 @@ func (c *Client) attempt(ctx context.Context, method, endpoint string, payload [
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("X-Api-Key", c.apiKey)
+	req.Header.Set(APIKeyHeader, c.apiKey)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.userAgent)
 	if payload != nil {

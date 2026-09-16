@@ -483,7 +483,7 @@ type BalanceResponse struct {
 type BetResponse struct {
 	BetID *int `json:"bet_id,omitempty"`
 
-	// BetType Bet type string — see "Sports & bet types" in the introduction.
+	// BetType Bet type string - see "Sports & bet types" in the introduction.
 	BetType      *string                  `json:"bet_type,omitempty"`
 	CcyRate      *float64                 `json:"ccy_rate,omitempty"`
 	EventID      *string                  `json:"event_id,omitempty"`
@@ -497,7 +497,7 @@ type BetResponse struct {
 	ProfitLoss   *StakeTuple `json:"profit_loss,omitempty"`
 	Reconciled   *bool       `json:"reconciled,omitempty"`
 
-	// Sport Sport code — see "Sports & bet types" in the introduction.
+	// Sport Sport code - see "Sports & bet types" in the introduction.
 	Sport *string `json:"sport,omitempty"`
 
 	// Status Bet status
@@ -551,7 +551,7 @@ type BetslipCreateEnvelopeStatus string
 
 // BetslipCreateRequest defines model for BetslipCreateRequest.
 type BetslipCreateRequest struct {
-	// BetType Bet type string (required for normal/lay) — see "Sports & bet types" in the introduction.
+	// BetType Bet type string (required for normal/lay) - see "Sports & bet types" in the introduction.
 	BetType        *string                          `json:"bet_type,omitempty"`
 	BetslipType    *BetslipCreateRequestBetslipType `json:"betslip_type,omitempty"`
 	EquivalentBets *bool                            `json:"equivalent_bets,omitempty"`
@@ -562,14 +562,14 @@ type BetslipCreateRequest struct {
 	// ExcludeDanger When true, only liquidity sources that do not hold bets in danger status are used. When false or omitted, all available liquidity sources are used.
 	ExcludeDanger *bool `json:"exclude_danger,omitempty"`
 
-	// Legs Parlay legs (required for parlay, 2–10 legs)
+	// Legs Parlay legs (required for parlay, 2-10 legs)
 	Legs *[]struct {
 		BetType string `json:"bet_type"`
 		EventID string `json:"event_id"`
 		Sport   string `json:"sport"`
 	} `json:"legs,omitempty"`
 
-	// Sport Sport code (required for normal/lay) — see "Sports & bet types" in the introduction.
+	// Sport Sport code (required for normal/lay) - see "Sports & bet types" in the introduction.
 	Sport    *string `json:"sport,omitempty"`
 	UserData *string `json:"user_data,omitempty"`
 }
@@ -579,7 +579,7 @@ type BetslipCreateRequestBetslipType string
 
 // BetslipCreateResponse Create (POST) response; carries no prices. Poll GET or watch the stream for the quote.
 type BetslipCreateResponse struct {
-	// BetType Bet type string — see "Sports & bet types" in the introduction.
+	// BetType Bet type string - see "Sports & bet types" in the introduction.
 	BetType *string `json:"bet_type,omitempty"`
 
 	// BetTypeDescription Human-readable label, e.g. Home, Over 1.5 (Asian)
@@ -605,7 +605,7 @@ type BetslipCreateResponse struct {
 	// Legs Parlay legs (only present for parlay betslips)
 	Legs *ParlayLegList `json:"legs,omitempty"`
 
-	// Sport Sport code — see "Sports & bet types" in the introduction.
+	// Sport Sport code - see "Sports & bet types" in the introduction.
 	Sport    *string `json:"sport,omitempty"`
 	UserData *string `json:"user_data,omitempty"`
 }
@@ -634,7 +634,7 @@ type BetslipListEnvelopeStatus string
 
 // BetslipResponse defines model for BetslipResponse.
 type BetslipResponse struct {
-	// BetType Bet type string — see "Sports & bet types" in the introduction.
+	// BetType Bet type string - see "Sports & bet types" in the introduction.
 	BetType *string `json:"bet_type,omitempty"`
 
 	// BetTypeDescription Human-readable label, e.g. Home, Over 1.5 (Asian)
@@ -663,7 +663,7 @@ type BetslipResponse struct {
 	// PriceList Prices sorted descending (best price first). May be empty until quotes arrive, or when no source is currently quoting.
 	PriceList *[]PriceLevel `json:"price_list,omitempty"`
 
-	// Sport Sport code — see "Sports & bet types" in the introduction.
+	// Sport Sport code - see "Sports & bet types" in the introduction.
 	Sport *string `json:"sport,omitempty"`
 
 	// Total Sum of max stakes across all price levels, or null if no prices
@@ -674,12 +674,12 @@ type BetslipResponse struct {
 // BetslipResponseBetslipType defines model for BetslipResponse.BetslipType.
 type BetslipResponseBetslipType string
 
-// ErrorEnvelope Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// ErrorEnvelope Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 type ErrorEnvelope struct {
 	// Code Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
 	Code string `json:"code"`
 
-	// Data Variable. Null, string, or object — see examples.
+	// Data Variable. Null, string, or object - see examples.
 	Data   interface{}         `json:"data,omitempty"`
 	Status ErrorEnvelopeStatus `json:"status"`
 }
@@ -912,7 +912,7 @@ type OrderListEnvelopeStatus string
 type OrderResponse struct {
 	BetBarValues *map[string]interface{} `json:"bet_bar_values,omitempty"`
 
-	// BetType Bet type string — see "Sports & bet types" in the introduction.
+	// BetType Bet type string - see "Sports & bet types" in the introduction.
 	BetType            *string        `json:"bet_type,omitempty"`
 	BetTypeDescription *string        `json:"bet_type_description,omitempty"`
 	Bets               *[]BetResponse `json:"bets,omitempty"`
@@ -940,7 +940,7 @@ type OrderResponse struct {
 	Price      *float64    `json:"price,omitempty"`
 	ProfitLoss *StakeTuple `json:"profit_loss,omitempty"`
 
-	// Sport Sport code, or `parlay` for accumulators — see "Sports & bet types" in the introduction.
+	// Sport Sport code, or `parlay` for accumulators - see "Sports & bet types" in the introduction.
 	Sport *string `json:"sport,omitempty"`
 
 	// Stake Aggregate stake across matched bets
@@ -963,7 +963,7 @@ type OrderResponseOrderType string
 
 // ParlayLeg defines model for ParlayLeg.
 type ParlayLeg struct {
-	// BetType Bet type string — see "Sports & bet types" in the introduction.
+	// BetType Bet type string - see "Sports & bet types" in the introduction.
 	BetType            *string `json:"bet_type,omitempty"`
 	BetTypeDescription *string `json:"bet_type_description,omitempty"`
 	EventID            *string `json:"event_id,omitempty"`
@@ -973,7 +973,7 @@ type ParlayLeg struct {
 	Outcome *ParlayLegOutcome `json:"outcome,omitempty"`
 	Price   *float64          `json:"price,omitempty"`
 
-	// Sport Sport code — see "Sports & bet types" in the introduction.
+	// Sport Sport code - see "Sports & bet types" in the introduction.
 	Sport *string `json:"sport,omitempty"`
 }
 
@@ -1109,16 +1109,16 @@ type XRatesEnvelope struct {
 // XRatesEnvelopeStatus defines model for XRatesEnvelope.Status.
 type XRatesEnvelopeStatus string
 
-// Error401 Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Error401 Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 type Error401 = ErrorEnvelope
 
-// Error403 Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Error403 Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 type Error403 = ErrorEnvelope
 
-// Error429 Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Error429 Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 type Error429 = ErrorEnvelope
 
-// Error500 Standard error response. The shape of `data` varies by `code` — see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+// Error500 Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 type Error500 = ErrorEnvelope
 
 // PostV2HeartbeatsJSONBody defines parameters for PostV2Heartbeats.
@@ -1138,7 +1138,7 @@ type GetV2OrdersParams struct {
 	// Status Filter by status (open, pending, done, failed)
 	Status *[]string `form:"status,omitempty" json:"status,omitempty"`
 
-	// Sport Filter by sport code — see "Sports & bet types" in the introduction.
+	// Sport Filter by sport code - see "Sports & bet types" in the introduction.
 	Sport *[]string `form:"sport,omitempty" json:"sport,omitempty"`
 
 	// EventID Filter by event ID
@@ -1162,7 +1162,7 @@ type PostV2OrdersCloseAllJSONBody struct {
 	// EventID Only close orders on this event (requires sport)
 	EventID *string `json:"event_id,omitempty"`
 
-	// Sport Only close orders on this sport — see "Sports & bet types" in the introduction.
+	// Sport Only close orders on this sport - see "Sports & bet types" in the introduction.
 	Sport *string `json:"sport,omitempty"`
 }
 

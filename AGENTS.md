@@ -46,9 +46,16 @@ Watch for endpoints whose response does not follow the common pattern:
 This repo targets the **public v2 API**: `https://magicmarkets.com/v2`,
 authenticated with a single `X-Api-Key` header. That is the only auth method
 the public API supports today — there is no OAuth yet, and an OAuth-based
-solution is still in progress. `internal/mcpserver` (the stdio MCP tools) is
-part of this same repo and authenticates the same way, via the same client;
-it is not a separate deployment.
+solution is still in progress. `internal/mcpserver` (the MCP tools, over
+stdio or `--http`) is part of this same repo and authenticates the same way,
+via the same client; it is not a separate deployment.
+
+`magicmarkets mcp --http` serves the MCP streamable HTTP transport. The
+process does not hold a Magic Markets API key. Every MCP request must carry
+the caller's key in `X-Api-Key`; that value is forwarded to the API. Don't
+remove the header check — without it anyone who can reach the listener can
+open a session. Stdio still uses `MAGICMARKETS_API_KEY` in the process
+environment.
 
 ## Repeatable flags that hold event IDs use StringArrayVar, not StringSliceVar
 
@@ -63,7 +70,23 @@ never do (`--sport`, `--status`, `--type`).
 ## Layering
 
 `internal/magicmarkets` must not import `internal/cli` or `internal/mcpserver`. It is
-a standalone Go client library; the CLI and the MCP stdio tools are both consumers.
+a standalone Go client library; the CLI and the MCP tools (stdio and HTTP) are both
+consumers.
+
+## MCP types are not API types
+
+Stdio (`magicmarkets mcp`) and HTTP (`magicmarkets mcp --http`) share
+`internal/mcpserver`. They must not expose `internal/magicmarkets` or generated
+`internal/magicmarketsapi` structs as tool input/output.
+
+| Layer | Package | Role |
+| ----- | ------- | ---- |
+| Spec / generated models | `internal/spec`, `internal/magicmarketsapi` | OpenAPI contract. Never hand-edit generated files. |
+| Client wire types | `internal/magicmarkets` | Hand-written API models used by the REST/WS client. Kept in sync with generated types by `contract_test.go`. |
+| MCP tool contract | `internal/mcpserver` (`types.go`) | Object-rooted structs the LLM/host sees. Reuse shared records (`order`, `betslip`, `stake`, …) across tools. Acyclic — no nested self-types, no `map[string]any`. |
+| Mapper | `internal/mcpserver` (`mapper.go`) | The only place that converts MCP structs ↔ client structs (and MCP inputs → `CreateBetslipRequest` / `CreateOrderRequest` / `OrderFilter`). |
+
+When the API grows a field, update the client type (and the contract test exception maps if needed), then extend the MCP struct and mapper — do not return the API struct from a tool handler. List tools wrap arrays in an object so structured content stays object-rooted.
 
 ## The binary is `magicmarkets`, and the main package must stay in cmd/magicmarkets
 

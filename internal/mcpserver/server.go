@@ -1,5 +1,6 @@
-// Package mcpserver exposes the Magic Markets API as MCP tools over stdio, so
-// an LLM agent can read prices and manage orders.
+// Package mcpserver exposes the Magic Markets API as MCP tools over stdio or
+// the streamable HTTP transport, so an LLM agent can read prices and manage
+// orders.
 //
 // Read-only tools are always registered. Tools that spend money — creating
 // betslips, placing orders, closing orders — are registered only when trading is
@@ -9,6 +10,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +19,9 @@ import (
 	"magicmarkets-cli/internal/config"
 	"magicmarkets-cli/internal/magicmarkets"
 )
+
+// HTTPPath is where the streamable HTTP transport is mounted.
+const HTTPPath = "/mcp"
 
 // Options configures the MCP server.
 type Options struct {
@@ -52,6 +57,87 @@ func New(client *magicmarkets.Client, cfg *config.Config, opts Options) *Server 
 // stdout carries the JSON-RPC stream, so all logging must go to stderr.
 func (s *Server) Serve() error {
 	return s.newMCP().Run(context.Background(), &mcp.StdioTransport{})
+}
+
+// ServeHTTP registers every tool and serves MCP over the streamable HTTP
+// transport at addr, until ctx is cancelled.
+//
+// The process does not hold a Magic Markets API key. Each request must
+// carry the caller's key in X-Api-Key; that value is used for upstream API
+// calls. /health and /live are unauthenticated for probes.
+func (s *Server) ServeHTTP(ctx context.Context, addr string) error {
+	httpServer := &http.Server{Addr: addr, Handler: s.httpHandler()}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- httpServer.ListenAndServe() }()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return ctx.Err()
+	}
+}
+
+// httpHandler builds the mux ServeHTTP listens on, split out so tests can
+// exercise it without binding a real port.
+func (s *Server) httpHandler() http.Handler {
+	streamable := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		key := strings.TrimSpace(r.Header.Get(magicmarkets.APIKeyHeader))
+		if key == "" {
+			return nil
+		}
+		cfg := *s.cfg
+		cfg.APIKey = key
+		client := magicmarkets.New(cfg.APIURL, key, cfg.Timeout,
+			magicmarkets.WithUserAgent("magicmarkets-cli/"+s.opts.Version))
+		return New(client, &cfg, s.opts).newMCP()
+	}, streamableHTTPOptions())
+
+	mux := http.NewServeMux()
+	mux.Handle(HTTPPath, requireAPIKeyHeader(streamable))
+	mux.HandleFunc("/health", probeOK)
+	mux.HandleFunc("/live", probeOK)
+	return mux
+}
+
+func probeOK(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
+}
+
+// streamableHTTPOptions is how we serve MCP over HTTP.
+//
+// Stateless: the hosted deployment runs more than one replica with no
+// session affinity. Streamable HTTP sessions live in process memory, so a
+// tools/call that lands on a different replica than initialize looks like
+// "session not found". Every tool is a self-contained API call keyed by
+// X-Api-Key, so we do not need a transport session.
+//
+// JSONResponse: return a single application/json body rather than
+// text/event-stream for tool results.
+func streamableHTTPOptions() *mcp.StreamableHTTPOptions {
+	return &mcp.StreamableHTTPOptions{
+		Stateless:    true,
+		JSONResponse: true,
+	}
+}
+
+// requireAPIKeyHeader rejects requests with no X-Api-Key. The key is the
+// caller's Magic Markets credential, not a server-side secret.
+func requireAPIKeyHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimSpace(r.Header.Get(magicmarkets.APIKeyHeader)) == "" {
+			http.Error(w, "missing "+magicmarkets.APIKeyHeader, http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ToolNames returns the tools this server would expose, sorted.
@@ -193,90 +279,55 @@ func (s *Server) register(m *mcp.Server) {
 
 // ---------- read-only tools ----------
 
-func (s *Server) getBalance(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+func (s *Server) getBalance(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, balanceResult, error) {
 	bal, err := s.client.GetBalance(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, balanceResult{}, err
 	}
-	out := map[string]any{
-		"balance":    stakeMap(&bal.Balance),
-		"open_stake": stakeMap(&bal.OpenStake),
-		"available":  bal.Balance.Amount - bal.OpenStake.Amount,
-	}
-	if bal.SmartCredit != nil {
-		out["smart_credit"] = stakeMap(bal.SmartCredit)
-	}
-	return nil, out, nil
+	return nil, balanceFromAPI(bal), nil
 }
 
-func (s *Server) getXRates(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+func (s *Server) getXRates(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, exchangeRatesResult, error) {
 	rates, err := s.client.GetXRates(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, exchangeRatesResult{}, err
 	}
-	return nil, rates, nil
+	mapped := ratesFromAPI(rates)
+	return nil, exchangeRatesResult{Count: len(mapped), Rates: mapped}, nil
 }
 
-type getPositionInput struct {
-	Sport              string `json:"sport,omitempty" jsonschema:"Sport code filter, e.g. 'fb'."`
-	EventID            string `json:"event_id,omitempty" jsonschema:"Event ID filter, e.g. '2026-06-15,1001,2002'."`
-	Status             string `json:"status,omitempty" jsonschema:"Comma-separated status filter: open, pending, done, failed."`
-	IncludeCashoutInfo bool   `json:"include_cashout_info,omitempty" jsonschema:"Include a cashout valuation (football only)."`
-}
-
-func (s *Server) getPosition(ctx context.Context, _ *mcp.CallToolRequest, in getPositionInput) (*mcp.CallToolResult, any, error) {
-	filter := magicmarkets.OrderFilter{
-		Sport:   nonEmpty(in.Sport),
-		EventID: nonEmpty(in.EventID),
-		Status:  parseCSV(in.Status),
-	}
-	pos, err := s.client.GetPosition(ctx, filter, in.IncludeCashoutInfo)
+func (s *Server) getPosition(ctx context.Context, _ *mcp.CallToolRequest, in getPositionInput) (*mcp.CallToolResult, position, error) {
+	pos, err := s.client.GetPosition(ctx, in.orderFilter(), in.IncludeCashoutInfo)
 	if err != nil {
-		return nil, nil, err
+		return nil, position{}, err
 	}
-	return nil, pos, nil
+	return nil, positionFromAPI(pos), nil
 }
 
-type validateBetTypeInput struct {
-	Sport    string `json:"sport" jsonschema:"Sport code, e.g. 'fb'."`
-	BetType  string `json:"bet_type" jsonschema:"Bet type string, e.g. 'for,h'."`
-	HomeTeam string `json:"home_team,omitempty" jsonschema:"Home team name, for display labels."`
-	AwayTeam string `json:"away_team,omitempty" jsonschema:"Away team name, for display labels."`
-}
-
-func (s *Server) validateBetType(ctx context.Context, _ *mcp.CallToolRequest, in validateBetTypeInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) validateBetType(ctx context.Context, _ *mcp.CallToolRequest, in validateBetTypeInput) (*mcp.CallToolResult, validateBetTypeResult, error) {
 	if in.Sport == "" || in.BetType == "" {
-		return nil, nil, fmt.Errorf("sport and bet_type are required")
+		return nil, validateBetTypeResult{}, fmt.Errorf("sport and bet_type are required")
 	}
 	info, err := s.client.GetBetTypeInfo(ctx, in.Sport, in.BetType, in.HomeTeam, in.AwayTeam)
 	if err != nil {
 		if magicmarkets.HasCode(err, magicmarkets.CodeValidationError) {
-			return nil, map[string]any{
-				"valid": false,
-				"error": err.Error(),
-			}, nil
+			return nil, validateBetTypeResult{Valid: false, Error: err.Error()}, nil
 		}
-		return nil, nil, err
+		return nil, validateBetTypeResult{}, err
 	}
-	return nil, map[string]any{
-		"valid":                true,
-		"sport":                info.Sport,
-		"bet_type":             in.BetType,
-		"bet_type_description": info.BetTypeDescription,
-		"direction":            string(magicmarkets.DirectionOf(in.BetType)),
-		"winloss_grid":         info.WinLossGrid,
+	return nil, validateBetTypeResult{
+		Valid:              true,
+		Sport:              info.Sport,
+		BetType:            in.BetType,
+		BetTypeDescription: info.BetTypeDescription,
+		Direction:          string(magicmarkets.DirectionOf(in.BetType)),
+		WinLossGrid:        info.WinLossGrid,
 	}, nil
 }
 
-type snapPriceInput struct {
-	Price     float64 `json:"price" jsonschema:"Decimal price, between 1.01 and 1000."`
-	BetType   string  `json:"bet_type,omitempty" jsonschema:"Bet type string; its direction decides the rounding."`
-	Direction string  `json:"direction,omitempty" jsonschema:"'for' (back, rounds down) or 'against' (lay, rounds up). Defaults to 'for'. Ignored when bet_type is given."`
-}
-
-func (s *Server) snapPrice(_ context.Context, _ *mcp.CallToolRequest, in snapPriceInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) snapPrice(_ context.Context, _ *mcp.CallToolRequest, in snapPriceInput) (*mcp.CallToolResult, snapPriceResult, error) {
 	if in.Price <= 0 {
-		return nil, nil, fmt.Errorf("price must be positive")
+		return nil, snapPriceResult{}, fmt.Errorf("price must be positive")
 	}
 
 	dir := magicmarkets.Back
@@ -287,33 +338,26 @@ func (s *Server) snapPrice(_ context.Context, _ *mcp.CallToolRequest, in snapPri
 	}
 
 	snapped := magicmarkets.SnapPrice(in.Price, dir)
-	return nil, map[string]any{
-		"requested":     in.Price,
-		"direction":     string(dir),
-		"snapped":       snapped,
-		"tick":          magicmarkets.TickAt(snapped),
-		"already_valid": magicmarkets.IsOnTick(in.Price),
-		"implied_cents": magicmarkets.ImpliedCents(snapped),
+	return nil, snapPriceResult{
+		Requested:    in.Price,
+		Direction:    string(dir),
+		Snapped:      snapped,
+		Tick:         magicmarkets.TickAt(snapped),
+		AlreadyValid: magicmarkets.IsOnTick(in.Price),
+		ImpliedCents: magicmarkets.ImpliedCents(snapped),
 	}, nil
 }
 
-type listEventsInput struct {
-	Sport  string  `json:"sport,omitempty" jsonschema:"Comma-separated sport codes to keep, e.g. 'fb,tennis'."`
-	Search string  `json:"search,omitempty" jsonschema:"Case-insensitive match on event, team or competition name."`
-	Limit  float64 `json:"limit,omitempty" jsonschema:"Maximum events to return (default 50)."`
-	InPlay bool    `json:"in_play,omitempty" jsonschema:"Only events that are in play."`
-}
-
-func (s *Server) listEvents(ctx context.Context, _ *mcp.CallToolRequest, in listEventsInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) listEvents(ctx context.Context, _ *mcp.CallToolRequest, in listEventsInput) (*mcp.CallToolResult, listEventsResult, error) {
 	stream, err := s.dial(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, listEventsResult{}, err
 	}
 	defer stream.Close()
 
 	events, err := stream.Snapshot(ctx, s.opts.SnapshotTimeout)
 	if err != nil && len(events) == 0 {
-		return nil, nil, err
+		return nil, listEventsResult{}, err
 	}
 
 	wanted := map[string]bool{}
@@ -327,7 +371,7 @@ func (s *Server) listEvents(ctx context.Context, _ *mcp.CallToolRequest, in list
 		limit = 50
 	}
 
-	out := make([]map[string]any, 0, limit)
+	out := make([]event, 0, limit)
 	for _, e := range events {
 		if len(wanted) > 0 && !wanted[strings.ToLower(e.Sport)] {
 			continue
@@ -339,65 +383,41 @@ func (s *Server) listEvents(ctx context.Context, _ *mcp.CallToolRequest, in list
 			e.EventName+" "+e.Home+" "+e.Away+" "+e.CompetitionName+" "+e.EventID), needle) {
 			continue
 		}
-		row := map[string]any{
-			"sport":            e.Sport,
-			"event_id":         e.EventID,
-			"event_type":       e.EventType,
-			"event_name":       e.EventName,
-			"competition_name": e.CompetitionName,
-			"country":          e.CompetitionCountry,
-			"ir_status":        e.IRStatus,
-		}
-		if !e.StartTime.IsZero() {
-			row["start_time"] = e.StartTime.Format(time.RFC3339)
-		}
-		if e.EventType == "multirunner" {
-			row["runner_count"] = len(e.Teams)
-		} else {
-			row["home"] = e.Home
-			row["away"] = e.Away
-		}
+		row := eventFromStream(e)
 		out = append(out, row)
 		if len(out) >= limit {
 			break
 		}
 	}
 
-	return nil, map[string]any{
-		"count":      len(out),
-		"total_seen": len(events),
-		"events":     out,
-		"next_step":  "Call list_event_offers with a sport and event_id to see priced bet types.",
+	return nil, listEventsResult{
+		Count:     len(out),
+		TotalSeen: len(events),
+		Events:    out,
+		NextStep:  "Call list_event_offers with a sport and event_id to see priced bet types.",
 	}, nil
 }
 
-type listEventOffersInput struct {
-	Sport      string  `json:"sport" jsonschema:"Sport code, e.g. 'fb'."`
-	EventID    string  `json:"event_id" jsonschema:"Event ID, e.g. '2026-06-15,1001,2002'."`
-	MarketType string  `json:"market_type,omitempty" jsonschema:"Only this market type, e.g. 'ah'."`
-	Limit      float64 `json:"limit,omitempty" jsonschema:"Maximum offers to return (default 100)."`
-}
-
-func (s *Server) listEventOffers(ctx context.Context, _ *mcp.CallToolRequest, in listEventOffersInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) listEventOffers(ctx context.Context, _ *mcp.CallToolRequest, in listEventOffersInput) (*mcp.CallToolResult, listEventOffersResult, error) {
 	if in.Sport == "" || in.EventID == "" {
-		return nil, nil, fmt.Errorf("sport and event_id are required")
+		return nil, listEventOffersResult{}, fmt.Errorf("sport and event_id are required")
 	}
 
 	stream, err := s.dial(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, listEventOffersResult{}, err
 	}
 	defer stream.Close()
 
 	// The register acknowledgement is indistinguishable from the opening
 	// dump unless the snapshot is drained first.
 	if _, err := stream.Snapshot(ctx, s.opts.SnapshotTimeout); err != nil {
-		return nil, nil, fmt.Errorf("waiting for initial sync: %w", err)
+		return nil, listEventOffersResult{}, fmt.Errorf("waiting for initial sync: %w", err)
 	}
 
 	offers, err := stream.CollectOffers(ctx, in.Sport, in.EventID, s.opts.SnapshotTimeout)
 	if err != nil {
-		return nil, nil, err
+		return nil, listEventOffersResult{}, err
 	}
 
 	limit := int(in.Limit)
@@ -405,48 +425,30 @@ func (s *Server) listEventOffers(ctx context.Context, _ *mcp.CallToolRequest, in
 		limit = 100
 	}
 
-	out := make([]map[string]any, 0, len(offers))
+	out := make([]offer, 0, len(offers))
 	for _, o := range offers {
 		if in.MarketType != "" && !strings.EqualFold(o.MarketType, in.MarketType) {
 			continue
 		}
-		out = append(out, map[string]any{
-			"bet_type":    o.BetType,
-			"market_type": o.MarketType,
-			"in_running":  o.InRunning,
-			"prices":      priceLevels(o.PriceList),
-			"best_price":  bestPrice(o.PriceList),
-		})
+		out = append(out, offerFromStream(o))
 		if len(out) >= limit {
 			break
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return fmt.Sprint(out[i]["bet_type"]) < fmt.Sprint(out[j]["bet_type"])
+		return out[i].BetType < out[j].BetType
 	})
 
-	return nil, map[string]any{
-		"sport":     in.Sport,
-		"event_id":  in.EventID,
-		"count":     len(out),
-		"offers":    out,
-		"next_step": "Pass a bet_type verbatim to create_betslip, then place_order against the betslip.",
+	return nil, listEventOffersResult{
+		Sport:    in.Sport,
+		EventID:  in.EventID,
+		Count:    len(out),
+		Offers:   out,
+		NextStep: "Pass a bet_type verbatim to create_betslip, then place_order against the betslip.",
 	}, nil
 }
 
-type listOrdersInput struct {
-	Status    string  `json:"status,omitempty" jsonschema:"Comma-separated: open, pending, done, failed."`
-	Sport     string  `json:"sport,omitempty" jsonschema:"Comma-separated sport codes."`
-	EventID   string  `json:"event_id,omitempty" jsonschema:"Comma-separated event IDs."`
-	OrderType string  `json:"order_type,omitempty" jsonschema:"Comma-separated: normal, lay, parlay."`
-	DateFrom  string  `json:"date_from,omitempty" jsonschema:"Start of range, ISO 8601."`
-	DateTo    string  `json:"date_to,omitempty" jsonschema:"End of range, ISO 8601."`
-	Search    string  `json:"search,omitempty" jsonschema:"Free-text search."`
-	Page      float64 `json:"page,omitempty" jsonschema:"Page number (default 1)."`
-	PageSize  float64 `json:"page_size,omitempty" jsonschema:"Results per page (default 25)."`
-}
-
-func (s *Server) listOrders(ctx context.Context, _ *mcp.CallToolRequest, in listOrdersInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) listOrders(ctx context.Context, _ *mcp.CallToolRequest, in listOrdersInput) (*mcp.CallToolResult, listOrdersResult, error) {
 	page := int(in.Page)
 	if page == 0 {
 		page = 1
@@ -455,62 +457,47 @@ func (s *Server) listOrders(ctx context.Context, _ *mcp.CallToolRequest, in list
 	if pageSize == 0 {
 		pageSize = 25
 	}
-	filter := magicmarkets.OrderFilter{
-		Status:    parseCSV(in.Status),
-		Sport:     parseCSV(in.Sport),
-		EventID:   parseCSV(in.EventID),
-		OrderType: parseCSV(in.OrderType),
-		DateFrom:  in.DateFrom,
-		DateTo:    in.DateTo,
-		Search:    in.Search,
-	}
-	orders, err := s.client.ListOrders(ctx, filter, page, pageSize)
+	orders, err := s.client.ListOrders(ctx, in.orderFilter(), page, pageSize)
 	if err != nil {
-		return nil, nil, err
+		return nil, listOrdersResult{}, err
 	}
-	return nil, map[string]any{"count": len(orders), "orders": orders}, nil
+	mapped := ordersFromAPI(orders)
+	return nil, listOrdersResult{Count: len(mapped), Orders: mapped}, nil
 }
 
-type getOrderInput struct {
-	OrderID     float64 `json:"order_id,omitempty" jsonschema:"Numeric order ID."`
-	RequestUUID string  `json:"request_uuid,omitempty" jsonschema:"The request_uuid used at creation."`
-}
-
-func (s *Server) getOrder(ctx context.Context, _ *mcp.CallToolRequest, in getOrderInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) getOrder(ctx context.Context, _ *mcp.CallToolRequest, in getOrderInput) (*mcp.CallToolResult, order, error) {
 	if in.RequestUUID != "" {
-		order, err := s.client.GetOrderByUUID(ctx, in.RequestUUID)
+		o, err := s.client.GetOrderByUUID(ctx, in.RequestUUID)
 		if err != nil {
-			return nil, nil, err
+			return nil, order{}, err
 		}
-		return nil, order, nil
+		return nil, orderFromAPI(o), nil
 	}
 	id := int64(in.OrderID)
 	if id == 0 {
-		return nil, nil, fmt.Errorf("either order_id or request_uuid is required")
+		return nil, order{}, fmt.Errorf("either order_id or request_uuid is required")
 	}
-	order, err := s.client.GetOrder(ctx, id)
+	o, err := s.client.GetOrder(ctx, id)
 	if err != nil {
-		return nil, nil, err
+		return nil, order{}, err
 	}
-	return nil, order, nil
+	return nil, orderFromAPI(o), nil
 }
 
-func (s *Server) listBetslips(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+func (s *Server) listBetslips(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listBetslipsResult, error) {
 	ids, err := s.client.ListBetslips(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, listBetslipsResult{}, err
 	}
-	return nil, map[string]any{"count": len(ids), "betslip_ids": ids}, nil
+	if ids == nil {
+		ids = []string{}
+	}
+	return nil, listBetslipsResult{Count: len(ids), BetslipIDs: ids}, nil
 }
 
-type getBetslipInput struct {
-	BetslipID   string  `json:"betslip_id" jsonschema:"Betslip ID."`
-	WaitSeconds float64 `json:"wait_seconds,omitempty" jsonschema:"Poll up to this long for a quote (default 0)."`
-}
-
-func (s *Server) getBetslip(ctx context.Context, _ *mcp.CallToolRequest, in getBetslipInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) getBetslip(ctx context.Context, _ *mcp.CallToolRequest, in getBetslipInput) (*mcp.CallToolResult, betslip, error) {
 	if in.BetslipID == "" {
-		return nil, nil, fmt.Errorf("betslip_id is required")
+		return nil, betslip{}, fmt.Errorf("betslip_id is required")
 	}
 
 	wait := time.Duration(in.WaitSeconds) * time.Second
@@ -524,43 +511,21 @@ func (s *Server) getBetslip(ctx context.Context, _ *mcp.CallToolRequest, in getB
 		bs, err = s.client.GetBetslip(ctx, in.BetslipID)
 	}
 	if bs == nil {
-		return nil, nil, err
+		return nil, betslip{}, err
 	}
-	out := betslipMap(bs)
+	out := betslipFromAPI(bs)
 	if err != nil {
-		out["warning"] = err.Error()
+		out.Warning = err.Error()
 	}
 	return nil, out, nil
 }
 
 // ---------- trading tools (opt-in) ----------
 
-type createBetslipInput struct {
-	Sport         string   `json:"sport" jsonschema:"Sport code, e.g. 'fb'."`
-	EventID       string   `json:"event_id" jsonschema:"Event ID, e.g. '2026-06-15,1001,2002'."`
-	BetType       string   `json:"bet_type" jsonschema:"Bet type string, copied from list_event_offers."`
-	BetslipType   string   `json:"betslip_type,omitempty" jsonschema:"'normal' (default) or 'lay'."`
-	UserData      string   `json:"user_data,omitempty" jsonschema:"Opaque tag stored with the betslip (max 512 chars)."`
-	ExcludeDanger bool     `json:"exclude_danger,omitempty" jsonschema:"Only quote from sources holding no bets in danger status."`
-	WaitSeconds   *float64 `json:"wait_seconds,omitempty" jsonschema:"Poll up to this long for a quote (default 5)."`
-}
-
-func (s *Server) createBetslip(ctx context.Context, _ *mcp.CallToolRequest, in createBetslipInput) (*mcp.CallToolResult, any, error) {
-	betslipType := in.BetslipType
-	if betslipType == "" {
-		betslipType = magicmarkets.BetslipNormal
-	}
-	reqBody := magicmarkets.CreateBetslipRequest{
-		Sport:         in.Sport,
-		EventID:       in.EventID,
-		BetType:       in.BetType,
-		BetslipType:   betslipType,
-		UserData:      in.UserData,
-		ExcludeDanger: in.ExcludeDanger,
-	}
-	bs, err := s.client.CreateBetslip(ctx, reqBody)
+func (s *Server) createBetslip(ctx context.Context, _ *mcp.CallToolRequest, in createBetslipInput) (*mcp.CallToolResult, betslip, error) {
+	bs, err := s.client.CreateBetslip(ctx, in.request())
 	if err != nil {
-		return nil, nil, err
+		return nil, betslip{}, err
 	}
 
 	wait := 5 * time.Second
@@ -578,176 +543,127 @@ func (s *Server) createBetslip(ctx context.Context, _ *mcp.CallToolRequest, in c
 		}
 	}
 
-	out := betslipMap(bs)
-	if warning != "" {
-		out["warning"] = warning
-	}
-	out["next_step"] = "Call place_order with this betslip_id, a price from the price list, and a stake."
+	out := betslipFromAPI(bs)
+	out.Warning = warning
+	out.NextStep = "Call place_order with this betslip_id, a price from the price list, and a stake."
 	return nil, out, nil
 }
 
-type placeOrderInput struct {
-	BetslipID         string  `json:"betslip_id" jsonschema:"Betslip to order against."`
-	Price             float64 `json:"price" jsonschema:"Desired decimal price."`
-	Stake             float64 `json:"stake" jsonschema:"Stake amount in USDT."`
-	Duration          float64 `json:"duration,omitempty" jsonschema:"Seconds the order stays open (default 15)."`
-	ExchangeMode      string  `json:"exchange_mode,omitempty" jsonschema:"'make_and_take' (default), 'take_only' or 'dark'."`
-	RequestUUID       string  `json:"request_uuid,omitempty" jsonschema:"Idempotency key. Strongly recommended."`
-	UserData          string  `json:"user_data,omitempty" jsonschema:"Opaque tag stored with the order (max 512 chars)."`
-	KeepOpenIR        bool    `json:"keep_open_ir,omitempty" jsonschema:"Keep the order open when the event goes in-play."`
-	AcceptPartialFill *bool   `json:"accept_partial_fill,omitempty" jsonschema:"Accept a partial fill (default true)."`
-	AcceptBetterPrice *bool   `json:"accept_better_price,omitempty" jsonschema:"Accept a better price (default true)."`
-}
-
-func (s *Server) placeOrder(ctx context.Context, _ *mcp.CallToolRequest, in placeOrderInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) placeOrder(ctx context.Context, _ *mcp.CallToolRequest, in placeOrderInput) (*mcp.CallToolResult, placeOrderResult, error) {
 	if in.BetslipID == "" {
-		return nil, nil, fmt.Errorf("betslip_id is required")
+		return nil, placeOrderResult{}, fmt.Errorf("betslip_id is required")
 	}
 
 	// Look the betslip up so the price is snapped in the correct direction.
 	bs, err := s.client.GetBetslip(ctx, in.BetslipID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("look up betslip %s: %w", in.BetslipID, err)
+		return nil, placeOrderResult{}, fmt.Errorf("look up betslip %s: %w", in.BetslipID, err)
 	}
 
 	dir := magicmarkets.DirectionOf(bs.BetType)
 	snapped := magicmarkets.SnapPrice(in.Price, dir)
 
-	duration := in.Duration
-	if duration == 0 {
-		duration = 15
-	}
-	orderReq := magicmarkets.CreateOrderRequest{
-		BetslipID:    in.BetslipID,
-		Price:        snapped,
-		Stake:        magicmarkets.USDT(in.Stake),
-		Duration:     duration,
-		ExchangeMode: in.ExchangeMode,
-		RequestUUID:  in.RequestUUID,
-		UserData:     in.UserData,
-		KeepOpenIR:   in.KeepOpenIR,
-	}
-	if in.AcceptPartialFill != nil && !*in.AcceptPartialFill {
-		orderReq.AcceptPartialFill = in.AcceptPartialFill
-	}
-	if in.AcceptBetterPrice != nil && !*in.AcceptBetterPrice {
-		orderReq.AcceptBetterPrice = in.AcceptBetterPrice
-	}
+	orderReq := in.request(snapped)
 
-	order, err := s.client.CreateOrder(ctx, orderReq)
+	created, err := s.client.CreateOrder(ctx, orderReq)
 	if err != nil {
 		// A reused idempotency key means the order already exists.
 		if magicmarkets.HasCode(err, magicmarkets.CodeOrderAlreadyCreated) && orderReq.RequestUUID != "" {
 			if existing, gerr := s.client.GetOrderByUUID(ctx, orderReq.RequestUUID); gerr == nil {
-				return nil, map[string]any{
-					"order":   existing,
-					"warning": "this request_uuid had already created an order; returning the existing one",
+				return nil, placeOrderResult{
+					Order:   orderFromAPI(existing),
+					Warning: "this request_uuid had already created an order; returning the existing one",
 				}, nil
 			}
 		}
-		return nil, nil, err
+		return nil, placeOrderResult{}, err
 	}
 
-	out := map[string]any{"order": order}
+	out := placeOrderResult{Order: orderFromAPI(created)}
 	if snapped != in.Price {
-		out["price_snapped"] = map[string]any{
-			"requested": in.Price,
-			"used":      snapped,
-			"reason":    "off-tick price rounded onto the tick schedule",
+		out.PriceSnapped = &priceSnap{
+			Requested: in.Price,
+			Used:      snapped,
+			Reason:    "off-tick price rounded onto the tick schedule",
 		}
 	}
 	return nil, out, nil
 }
 
-type closeOrderInput struct {
-	OrderID float64 `json:"order_id" jsonschema:"Order ID to cancel."`
-}
-
-func (s *Server) closeOrder(ctx context.Context, _ *mcp.CallToolRequest, in closeOrderInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) closeOrder(ctx context.Context, _ *mcp.CallToolRequest, in closeOrderInput) (*mcp.CallToolResult, closeOrderResult, error) {
 	id := int64(in.OrderID)
 	if id == 0 {
-		return nil, nil, fmt.Errorf("order_id is required")
+		return nil, closeOrderResult{}, fmt.Errorf("order_id is required")
 	}
 	if err := s.client.CloseOrder(ctx, id); err != nil {
 		if magicmarkets.HasCode(err, magicmarkets.CodeOrderClosed) {
-			return nil, nil, fmt.Errorf("order %d is already closed or settled", id)
+			return nil, closeOrderResult{}, fmt.Errorf("order %d is already closed or settled", id)
 		}
-		return nil, nil, err
+		return nil, closeOrderResult{}, err
 	}
 
 	// The close response carries no data, so re-read the order.
-	order, err := s.client.GetOrder(ctx, id)
+	o, err := s.client.GetOrder(ctx, id)
 	if err != nil {
-		return nil, map[string]any{
-			"order_id": id,
-			"closed":   true,
-			"warning":  fmt.Sprintf("could not re-read the order: %v", err),
+		return nil, closeOrderResult{
+			OrderID: id,
+			Closed:  true,
+			Warning: fmt.Sprintf("could not re-read the order: %v", err),
 		}, nil
 	}
-	return nil, map[string]any{"order_id": id, "closed": true, "order": order}, nil
+	mapped := orderFromAPI(o)
+	return nil, closeOrderResult{OrderID: id, Closed: true, Order: &mapped}, nil
 }
 
-type closeAllOrdersInput struct {
-	Sport   string `json:"sport,omitempty" jsonschema:"Only orders on this sport."`
-	EventID string `json:"event_id,omitempty" jsonschema:"Only orders on this event (requires sport)."`
-}
-
-func (s *Server) closeAllOrders(ctx context.Context, _ *mcp.CallToolRequest, in closeAllOrdersInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) closeAllOrders(ctx context.Context, _ *mcp.CallToolRequest, in closeAllOrdersInput) (*mcp.CallToolResult, closeAllOrdersResult, error) {
 	result, err := s.client.CloseAllOrders(ctx, in.Sport, in.EventID)
 	if err != nil {
-		return nil, nil, err
+		return nil, closeAllOrdersResult{}, err
 	}
-	return nil, map[string]any{"result": result}, nil
+	return nil, closeAllOrdersResult{Result: string(result)}, nil
 }
 
-type createHeartbeatInput struct {
-	Timeout float64 `json:"timeout" jsonschema:"Seconds before expiry (10-300)."`
-}
-
-func (s *Server) createHeartbeat(ctx context.Context, _ *mcp.CallToolRequest, in createHeartbeatInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) createHeartbeat(ctx context.Context, _ *mcp.CallToolRequest, in createHeartbeatInput) (*mcp.CallToolResult, heartbeat, error) {
 	hb, err := s.client.CreateHeartbeat(ctx, int(in.Timeout))
 	if err != nil {
-		return nil, nil, err
+		return nil, heartbeat{}, err
 	}
-	return nil, hb, nil
+	return nil, heartbeatFromAPI(hb), nil
 }
 
-type heartbeatIDInput struct {
-	HeartbeatID string `json:"heartbeat_id" jsonschema:"Heartbeat ID."`
-}
-
-func (s *Server) refreshHeartbeat(ctx context.Context, _ *mcp.CallToolRequest, in heartbeatIDInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) refreshHeartbeat(ctx context.Context, _ *mcp.CallToolRequest, in heartbeatIDInput) (*mcp.CallToolResult, heartbeat, error) {
 	if in.HeartbeatID == "" {
-		return nil, nil, fmt.Errorf("heartbeat_id is required")
+		return nil, heartbeat{}, fmt.Errorf("heartbeat_id is required")
 	}
 	hb, err := s.client.RefreshHeartbeat(ctx, in.HeartbeatID)
 	if err != nil {
-		return nil, nil, err
+		return nil, heartbeat{}, err
 	}
-	return nil, hb, nil
+	return nil, heartbeatFromAPI(hb), nil
 }
 
-func (s *Server) listHeartbeats(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+func (s *Server) listHeartbeats(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listHeartbeatsResult, error) {
 	hbs, err := s.client.ListHeartbeats(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, listHeartbeatsResult{}, err
 	}
-	return nil, map[string]any{"count": len(hbs), "heartbeats": hbs}, nil
+	mapped := heartbeatsFromAPI(hbs)
+	return nil, listHeartbeatsResult{Count: len(mapped), Heartbeats: mapped}, nil
 }
 
-func (s *Server) cancelHeartbeat(ctx context.Context, _ *mcp.CallToolRequest, in heartbeatIDInput) (*mcp.CallToolResult, any, error) {
+func (s *Server) cancelHeartbeat(ctx context.Context, _ *mcp.CallToolRequest, in heartbeatIDInput) (*mcp.CallToolResult, cancelHeartbeatResult, error) {
 	if in.HeartbeatID == "" {
-		return nil, nil, fmt.Errorf("heartbeat_id is required")
+		return nil, cancelHeartbeatResult{}, fmt.Errorf("heartbeat_id is required")
 	}
 	if err := s.client.CancelHeartbeat(ctx, in.HeartbeatID); err != nil {
-		return nil, nil, err
+		return nil, cancelHeartbeatResult{}, err
 	}
-	return nil, map[string]any{"heartbeat_id": in.HeartbeatID, "cancelled": true}, nil
+	return nil, cancelHeartbeatResult{HeartbeatID: in.HeartbeatID, Cancelled: true}, nil
 }
 
 // ---------- helpers ----------
 
-func addTool[In any](m *mcp.Server, name, desc string, ann *mcp.ToolAnnotations, h mcp.ToolHandlerFor[In, any]) {
+func addTool[In, Out any](m *mcp.Server, name, desc string, ann *mcp.ToolAnnotations, h mcp.ToolHandlerFor[In, Out]) {
 	mcp.AddTool(m, &mcp.Tool{Name: name, Description: desc, Annotations: ann}, h)
 }
 
@@ -795,58 +711,6 @@ func listRegisteredTools(m *mcp.Server) ([]*mcp.Tool, error) {
 // dial opens a stream connection for the discovery tools.
 func (s *Server) dial(ctx context.Context) (*magicmarkets.Stream, error) {
 	return magicmarkets.Dial(ctx, s.cfg.WSURL, s.cfg.APIKey, s.cfg.Lang)
-}
-
-func stakeMap(s *magicmarkets.Stake) map[string]any {
-	if s == nil {
-		return nil
-	}
-	return map[string]any{"currency": s.Currency, "amount": s.Amount}
-}
-
-func priceLevels(levels []magicmarkets.PriceLevel) []map[string]any {
-	out := make([]map[string]any, 0, len(levels))
-	for _, l := range levels {
-		out = append(out, map[string]any{
-			"price": l.Effective.Price,
-			"min":   stakeMap(l.Effective.Min),
-			"max":   stakeMap(l.Effective.Max),
-		})
-	}
-	return out
-}
-
-func bestPrice(levels []magicmarkets.PriceLevel) any {
-	if len(levels) == 0 {
-		return nil
-	}
-	return levels[0].Effective.Price
-}
-
-func betslipMap(bs *magicmarkets.Betslip) map[string]any {
-	out := map[string]any{
-		"betslip_id":           bs.BetslipID,
-		"sport":                bs.Sport,
-		"event_id":             bs.EventID,
-		"bet_type":             bs.BetType,
-		"bet_type_description": bs.BetTypeDescription,
-		"betslip_type":         bs.BetslipType,
-		"is_open":              bs.IsOpen,
-		"expires_at":           bs.ExpiresAt().Format(time.RFC3339),
-		"expires_in_seconds":   int(time.Until(bs.ExpiresAt()).Seconds()),
-		"prices":               priceLevels(bs.PriceList),
-		"best_price":           bestPrice(bs.PriceList),
-	}
-	if bs.Total != nil {
-		out["total_available"] = stakeMap(bs.Total)
-	}
-	if bs.CloseReason != nil && *bs.CloseReason != "" {
-		out["close_reason"] = *bs.CloseReason
-	}
-	if len(bs.Legs) > 0 {
-		out["legs"] = bs.Legs
-	}
-	return out
 }
 
 // parseCSV splits a comma-separated argument, dropping blanks.

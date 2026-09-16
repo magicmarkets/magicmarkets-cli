@@ -1,6 +1,6 @@
 # magicmarkets-cli
 
-A command-line interface for the [Magic Markets](https://magicmarkets.com) v2 API — stream live sports prices, quote selections, place and manage orders, and inspect your position. The same API is also available as MCP tools over stdio, so an LLM agent can drive it from a client that launches `magicmarkets mcp` as a subprocess.
+A command-line interface for the [Magic Markets](https://magicmarkets.com) v2 API — stream live sports prices, quote selections, place and manage orders, and inspect your position. The same API is also available as MCP tools, over stdio (a client launches `magicmarkets mcp` as a subprocess) or the streamable HTTP transport on localhost.
 
 Single static binary, authenticated with one API key. No request signing, no private keys.
 
@@ -12,7 +12,7 @@ magicmarkets order place --betslip bs-123 --price 2.10 --stake 50
 ```
 
 - **[Setup](#setup)** — install, authenticate, first commands
-- **[Using it](#using-it)** — the bet flow, command reference, MCP over stdio, prices, errors
+- **[Using it](#using-it)** — the bet flow, command reference, MCP, prices, errors
 - **[Development](#development)** — layout, code generation, conventions, contributing
 
 ---
@@ -249,7 +249,7 @@ On Ctrl-C the heartbeat is cancelled cleanly, leaving orders open. If the proces
 
 | Command | Purpose |
 |---|---|
-| `magicmarkets mcp` | MCP tools over stdio — a client launches this; it does not listen on a port. See [MCP over stdio](#mcp-over-stdio) |
+| `magicmarkets mcp` | MCP tools over stdio by default, or `--http` for the streamable HTTP transport on localhost. See [MCP](#mcp) |
 
 ### Reference
 
@@ -362,9 +362,11 @@ USDT
 
 The same applies to every money field: `want_stake`, `stake`, `profit_loss`, `total`, and the `min`/`max` inside a price level.
 
-## MCP over stdio
+## MCP
 
-There is no standalone MCP server to start or host. `magicmarkets mcp` is a stdio subprocess: an MCP client (Claude Code, Cursor, and the like) launches it and they exchange JSON-RPC on stdin/stdout. It does not listen on a port, and there is no HTTP or SSE transport.
+`magicmarkets mcp` serves the API as MCP tools, so an LLM agent can read prices and manage orders. By default it speaks stdio: an MCP client (Claude Code, Cursor, and the like) launches it as a subprocess and they exchange JSON-RPC on stdin/stdout. Pass `--http` to instead serve the MCP [streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http) on localhost — see [Serving over localhost HTTP](#serving-over-localhost-http) below.
+
+### stdio
 
 Register the command with a client:
 
@@ -395,6 +397,31 @@ Across clients, the most common snag is the `command` field: a client often spaw
 
 ```bash
 which magicmarkets   # or: make where
+```
+
+### Serving over localhost HTTP
+
+Pass `--http` to serve the streamable HTTP transport instead of stdio — useful when a client connects over the network, or you want one long-running server shared by several clients instead of a subprocess per client:
+
+```bash
+magicmarkets mcp --http --addr 127.0.0.1:8383
+```
+
+`--addr` defaults to `127.0.0.1:8383` — loopback-only, so nothing outside the machine can reach it regardless. `--http` has no TLS of its own — put it behind a reverse proxy if you expose it beyond loopback.
+
+**The server does not use `MAGICMARKETS_API_KEY`.** Each request must send the caller's key in an `X-Api-Key` header; that is the credential used against the Magic Markets API. Stdio still takes the key from the environment.
+
+Point a client at the URL instead of a command:
+
+```json
+{
+  "mcpServers": {
+    "magicmarkets": {
+      "url": "http://127.0.0.1:8383/mcp",
+      "headers": { "X-Api-Key": "your-key" }
+    }
+  }
+}
 ```
 
 ### Enabling trading
@@ -523,7 +550,7 @@ internal/magicmarkets/            API client — no CLI or MCP dependencies
   betslips.go orders.go account.go heartbeats.go
   stream.go                WebSocket client
 internal/cli/              cobra command tree, table/JSON rendering
-internal/mcpserver/        MCP tools over stdio, same client
+internal/mcpserver/        MCP tools over stdio or localhost HTTP, same client
 internal/spec/             embedded openapi.json + reference commands
 internal/magicmarketsapi/         generated models + the contract test guarding drift
 tools/prepspec/            adapts the spec for oapi-codegen

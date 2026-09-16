@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -13,16 +14,20 @@ func (a *App) newMCPCmd() *cobra.Command {
 	var (
 		timeout    time.Duration
 		printTools bool
+		httpMode   bool
+		addr       string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "mcp",
-		Short: "Serve the API as MCP tools over stdio",
-		Long: `Expose the API as MCP tools over stdio so an LLM agent can use Magic Markets.
+		Short: "Serve the API as MCP tools over stdio or localhost HTTP",
+		Long: `Expose the API as MCP tools so an LLM agent can use Magic Markets.
 
-This is not a standalone server: it does not listen on a port. An MCP client
-launches "magicmarkets mcp" as a subprocess and talks JSON-RPC on stdin/stdout.
-There is no HTTP or SSE transport.
+By default this speaks MCP over stdio: an MCP client launches "magicmarkets
+mcp" as a subprocess and talks JSON-RPC on stdin/stdout. Pass --http to
+instead serve the MCP streamable HTTP transport on --addr — useful for a
+client that connects over the network, or one long-running server shared by
+several clients instead of a subprocess per client.
 
 Read-only tools are always available: balance, exchange rates, position, order
 and betslip lookups, event and offer discovery, bet-type validation, and price
@@ -61,10 +66,29 @@ stdio subprocess, not a network service):
     }
   }
 
+Serving over HTTP instead of stdio:
+
+  magicmarkets mcp --http --addr 127.0.0.1:8383
+
+--addr defaults to 127.0.0.1:8383 — loopback-only. The process does not
+need MAGICMARKETS_API_KEY. Every MCP request must carry the caller's key
+in an X-Api-Key header; that is the credential used against the Magic
+Markets API. Point a client's MCP config at the URL:
+
+  {
+    "mcpServers": {
+      "magicmarkets": {
+        "url": "http://127.0.0.1:8383/mcp",
+        "headers": { "X-Api-Key": "your-key" }
+      }
+    }
+  }
+
 Verify which tools would be registered with: magicmarkets mcp --print-tools`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// stdout is the JSON-RPC stream, so every log line goes to stderr.
+			// stdout is the JSON-RPC stream in stdio mode, so every log line
+			// goes to stderr in both modes for consistency.
 			log.SetOutput(os.Stderr)
 			log.SetFlags(log.Ltime)
 
@@ -77,10 +101,28 @@ Verify which tools would be registered with: magicmarkets mcp --print-tools`,
 			}
 
 			// --print-tools is a diagnostic: it answers "is trading on?" without
-			// a client, and must not need a working key or open a stdio session.
+			// a client, and must not need a working key or open a session.
 			if printTools {
 				srv := mcpserver.New(nil, a.cfg, opts)
 				return a.printToolList(srv, trading)
+			}
+
+			transport := "stdio"
+			if httpMode {
+				transport = fmt.Sprintf("http on %s", addr)
+			}
+			if trading {
+				log.Printf("magicmarkets mcp starting (%s), "+
+					"trading ENABLED via MAGICMARKETS_ALLOW_TRADING — this process can place real bets", transport)
+			} else {
+				log.Printf("magicmarkets mcp starting (%s), read-only — "+
+					"set MAGICMARKETS_ALLOW_TRADING=1 to permit betting", transport)
+			}
+
+			if httpMode {
+				// The process holds no API key. Callers send X-Api-Key; that
+				// value is used for Magic Markets requests.
+				return mcpserver.New(nil, a.cfg, opts).ServeHTTP(ctx(cmd), addr)
 			}
 
 			client, err := a.Client()
@@ -96,16 +138,7 @@ Verify which tools would be registered with: magicmarkets mcp --print-tools`,
 				return err
 			}
 
-			if trading {
-				log.Printf("magicmarkets mcp starting (stdio), " +
-					"trading ENABLED via MAGICMARKETS_ALLOW_TRADING — this process can place real bets")
-			} else {
-				log.Printf("magicmarkets mcp starting (stdio), read-only — " +
-					"set MAGICMARKETS_ALLOW_TRADING=1 to permit betting")
-			}
-
-			srv := mcpserver.New(client, a.cfg, opts)
-			return srv.Serve()
+			return mcpserver.New(client, a.cfg, opts).Serve()
 		},
 	}
 
@@ -114,6 +147,10 @@ Verify which tools would be registered with: magicmarkets mcp --print-tools`,
 		"how long the discovery tools wait on the stream")
 	fl.BoolVar(&printTools, "print-tools", false,
 		"list the tools that would be registered, then exit")
+	fl.BoolVar(&httpMode, "http", false,
+		"serve the MCP streamable HTTP transport instead of stdio")
+	fl.StringVar(&addr, "addr", "127.0.0.1:8383",
+		"address to listen on in --http mode")
 	return cmd
 }
 

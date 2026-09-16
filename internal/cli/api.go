@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"magicmarkets-cli/internal/magicmarkets"
 	"magicmarkets-cli/internal/spec"
 )
 
@@ -255,7 +256,7 @@ is safe to paste and share. Pass --include-key to inline the real key.
 
 			var b strings.Builder
 			fmt.Fprintf(&b, "curl -sS -X %s '%s%s'", op.Method, a.cfg.APIURL, strings.TrimPrefix(op.Path, "/v2"))
-			fmt.Fprintf(&b, " \\\n  -H 'X-Api-Key: %s'", key)
+			fmt.Fprintf(&b, " \\\n  -H '%s: %s'", magicmarkets.APIKeyHeader, key)
 
 			if mt, ok := op.RequestBody.JSON(); ok {
 				fmt.Fprintf(&b, " \\\n  -H 'Content-Type: application/json'")

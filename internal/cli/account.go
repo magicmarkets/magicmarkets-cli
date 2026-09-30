@@ -12,6 +12,13 @@ import (
 	"magicmarkets-cli/internal/magicmarkets"
 )
 
+func basicAuthStatus(basicAuth string) string {
+	if basicAuth == "" {
+		return "not configured"
+	}
+	return "configured"
+}
+
 func (a *App) newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
@@ -24,19 +31,22 @@ handshake without a useful error.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			result := map[string]any{
-				"api_url":   a.cfg.APIURL,
-				"ws_url":    a.cfg.WSURL,
-				"lang":      a.cfg.Lang,
-				"api_key":   a.cfg.RedactedKey(),
-				"env_files": a.cfg.Loaded,
-				"version":   a.version,
+				"api_url":      a.cfg.APIURL,
+				"ws_url":       a.cfg.WSURL,
+				"lang":         a.cfg.Lang,
+				"api_key":      a.cfg.RedactedKey(),
+				"access_token": a.cfg.RedactedAccessToken(),
+				"oauth_issuer": a.cfg.OAuthIssuer,
+				"basic_auth":   a.cfg.BasicAuth != "",
+				"env_files":    a.cfg.Loaded,
+				"version":      a.version,
 			}
 
-			// Verify only when a key is present, so `status` stays useful as a
+			// Verify only when a credential is present, so `status` stays useful as a
 			// way to diagnose a missing key.
-			if a.cfg.APIKey == "" {
+			if a.cfg.APIKey == "" && a.cfg.AccessToken == "" {
 				result["authenticated"] = false
-				result["error"] = "no API key configured"
+				result["error"] = "no credentials configured"
 			} else {
 				client, err := a.Client()
 				if err != nil {
@@ -71,6 +81,9 @@ handshake without a useful error.`,
 				{"ws url", a.cfg.WSURL},
 				{"lang", a.cfg.Lang},
 				{"api key", a.cfg.RedactedKey()},
+				{"access token", a.cfg.RedactedAccessToken()},
+				{"oauth issuer", a.cfg.OAuthIssuer},
+				{"basic auth", basicAuthStatus(a.cfg.BasicAuth)},
 				{"env files", envFiles},
 				{"authenticated", auth},
 			}); err != nil {

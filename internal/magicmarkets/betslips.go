@@ -16,9 +16,10 @@ const (
 
 // BetslipLeg is one leg of a parlay betslip request.
 type BetslipLeg struct {
-	Sport   string `json:"sport"`
-	EventID string `json:"event_id"`
-	BetType string `json:"bet_type"`
+	Sport     string     `json:"sport"`
+	EventID   string     `json:"event_id"`
+	BetType   string     `json:"bet_type"`
+	LiveScore *LiveScore `json:"live_score,omitempty"`
 }
 
 // CreateBetslipRequest is the body of POST /v2/betslips/.
@@ -40,6 +41,10 @@ type CreateBetslipRequest struct {
 	EquivalentBets *bool `json:"equivalent_bets,omitempty"`
 
 	UserData string `json:"user_data,omitempty"`
+
+	// LiveScore is the in-running score this betslip is selected against.
+	// Omit it for pre-match selections.
+	LiveScore *LiveScore `json:"live_score,omitempty"`
 
 	// ExcludeDanger restricts quoting to liquidity sources that hold no bets
 	// in danger status.

@@ -4,7 +4,8 @@ go 1.25.10
 
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/hashicorp/golang-lru/v2 v2.0.7
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/oapi-codegen/runtime v1.7.0
 	github.com/spf13/cobra v1.10.2
 )

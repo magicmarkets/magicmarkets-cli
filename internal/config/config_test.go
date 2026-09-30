@@ -11,6 +11,9 @@ import (
 // developer's real key cannot leak into an assertion.
 var magicmarketsVars = []string{
 	"MAGICMARKETS_API_KEY", "MAGICMARKETS_APIKEY", "MAGICMARKETS_API_KEY",
+	"MAGICMARKETS_ACCESS_TOKEN", "MAGICMARKETS_BEARER_TOKEN",
+	"MAGICMARKETS_OAUTH_ISSUER", "MAGICMARKETS_OAUTH_CLIENT_ID", "MAGICMARKETS_OAUTH_PROXY_SECRET",
+	"MAGICMARKETS_MCP_PUBLIC_URL",
 	"MAGICMARKETS_API_URL", "MAGICMARKETS_BASE_URL", "MAGICMARKETS_WS_URL",
 	"MAGICMARKETS_LANG", "MAGICMARKETS_TIMEOUT", "MAGICMARKETS_ALLOW_TRADING",
 }
@@ -82,12 +85,22 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Lang != DefaultLang {
 		t.Errorf("Lang = %q, want %q", cfg.Lang, DefaultLang)
 	}
+	if cfg.OAuthIssuer != DefaultOAuthIssuer {
+		t.Errorf("OAuthIssuer = %q, want %q", cfg.OAuthIssuer, DefaultOAuthIssuer)
+	}
 	// A missing key is not a load error; only RequireKey complains.
 	if cfg.APIKey != "" {
 		t.Errorf("APIKey = %q, want empty", cfg.APIKey)
 	}
 	if err := cfg.RequireKey(); err == nil {
 		t.Error("RequireKey should fail when no key is configured")
+	}
+}
+
+func TestRequireAuthAcceptsAccessToken(t *testing.T) {
+	cfg := &Config{AccessToken: "oauth-tok"}
+	if err := cfg.RequireAuth(); err != nil {
+		t.Fatalf("RequireAuth with access token: %v", err)
 	}
 }
 

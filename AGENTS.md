@@ -43,19 +43,53 @@ Watch for endpoints whose response does not follow the common pattern:
 
 ## Authentication
 
-This repo targets the **public v2 API**: `https://magicmarkets.com/v2`,
-authenticated with a single `X-Api-Key` header. That is the only auth method
-the public API supports today — there is no OAuth yet, and an OAuth-based
-solution is still in progress. `internal/mcpserver` (the MCP tools, over
-stdio or `--http`) is part of this same repo and authenticates the same way,
-via the same client; it is not a separate deployment.
+This repo targets the **public v2 API**: `https://magicmarkets.com/v2`. A
+caller presents one of two credentials to this process: an `X-Api-Key`
+header, or `Authorization: Bearer` with an OAuth access token from
+`https://magicmarkets.com/api/auth` (scope `mcp`). `internal/mcpserver`
+accepts the same way, via the same client — but neither credential is what
+actually reaches the v2 API/`/v2/stream` unchanged. An API key is forwarded
+as-is; a Bearer token is *not* — the v2 API and stream don't accept the raw
+OAuth access token, and `GET /me` doesn't work for it either (it requires a
+genuine Firebase ID token, which a self-signed OAuth access token never is).
+It's resolved first, via `POST {issuer}/oauth2/firebase-token` followed by a
+Firebase `signInWithCustomToken` redemption, to the `magic-metadata-jwt`/
+`session` pair those endpoints actually require — see
+`internal/magicmarkets.MeResolver` (`internal/magicmarkets/meauth.go`) and
+the README's [Authentication](README.md#authentication) section.
 
 `magicmarkets mcp --http` serves the MCP streamable HTTP transport. The
-process does not hold a Magic Markets API key. Every MCP request must carry
-the caller's key in `X-Api-Key`; that value is forwarded to the API. Don't
-remove the header check — without it anyone who can reach the listener can
-open a session. Stdio still uses `MAGICMARKETS_API_KEY` in the process
-environment.
+process does not hold a Magic Markets credential. Every MCP request must
+carry the caller's `X-Api-Key` **or** `Authorization: Bearer`; that value is
+forwarded to the API and the stream. Don't remove the header check — without
+it anyone who can reach the listener can open a session. Unauthenticated
+`/mcp` responses include `WWW-Authenticate` pointing at RFC 9728
+protected-resource metadata. That metadata lists **this host** as the
+Authorization Server (not `https://magicmarkets.com/api/auth`) so Claude
+POSTs `/register` here.
+
+`internal/mcpserver/oauth.go` is a real OAuth proxy, not a passthrough: the
+real Magic Markets AS only allowlists **this process's own** callback
+(`{public-url}/mcp/callback`) for `MAGICMARKETS_OAUTH_CLIENT_ID` — it will
+never allowlist an arbitrary downstream client's redirect_uri (Claude's,
+Cursor's, ...). So `/authorize` never forwards the downstream client's
+redirect_uri upstream: it runs its own PKCE leg against the upstream AS with
+its own fixed callback, and `/callback` exchanges the upstream code, then
+hands the real Magic Markets tokens to the downstream client as a one-time
+proxy code (redeemed at `/token`). Don't "simplify" this back to forwarding
+the caller's redirect_uri — that only works in tests against a fake AS that
+doesn't enforce an allowlist; the real one will reject it.
+
+The proxy keeps no server-side session state — the hosted deployment runs
+multiple replicas with no session affinity, and the OAuth dance's three legs
+(`/authorize`, the upstream's redirect to `/callback`, and the downstream
+client's own `/token` call) aren't guaranteed to land on the same one. DCR
+client_ids, in-flight login state, and one-time codes are instead sealed
+(AES-256-GCM) self-contained tokens — see `oauthcrypto.go`. Every replica
+must share `MAGICMARKETS_OAUTH_PROXY_SECRET` or a request landing on a
+different replica than the one that minted a token can't decode it. Stdio
+still uses `MAGICMARKETS_API_KEY` or `MAGICMARKETS_ACCESS_TOKEN` in the
+process environment.
 
 ## Repeatable flags that hold event IDs use StringArrayVar, not StringSliceVar
 

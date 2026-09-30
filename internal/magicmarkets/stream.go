@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -232,36 +234,123 @@ type Stream struct {
 	SessionID string
 }
 
-// Dial opens the price feed.
+// DialOptions carries the extras Client.DialStream threads through to dial,
+// beyond the credential and resolver every entry point needs. The exported
+// Dial/DialWithCredential entry points don't take these — they're for
+// standalone use and have no basic-auth wall or trace sink to plumb through.
+type DialOptions struct {
+	// BasicAuth is an additional base64 "user:pass" token sent as
+	// Authorization: Basic on the handshake request, mirroring
+	// [WithBasicAuth] on REST — see that doc comment. Empty sends nothing.
+	BasicAuth string
+	// Trace, when non-nil, is called with a one-line summary of each step of
+	// the handshake. Used by the --verbose flag.
+	Trace func(format string, args ...any)
+}
+
+// Dial opens the price feed with a static API key.
 //
-// The key is passed as a query parameter and checked at the HTTP handshake: a
-// missing or invalid key fails the upgrade rather than producing an in-band
-// error. Verify the key with a REST call first — see Client.VerifyKey.
+// The key is sent both as the documented `api_key` query parameter and as
+// X-Api-Key, the same header REST uses. A missing or invalid credential fails
+// the upgrade rather than producing an in-band error. Verify it with a REST
+// call first — see Client.VerifyKey.
 func Dial(ctx context.Context, wsURL, apiKey, lang string) (*Stream, error) {
+	return dial(ctx, wsURL, Credential{APIKey: apiKey}, nil, lang, DialOptions{})
+}
+
+// DialStream opens the price feed using this client's credential — the same
+// [MeResolver] REST uses for a Bearer credential, so REST and the stream
+// resolve to the same magic-metadata-jwt/session pair. It also carries this
+// client's basic-auth wall credential (see [WithBasicAuth]) and --verbose
+// trace sink through to the handshake, same as REST gets on every request.
+func (c *Client) DialStream(ctx context.Context, wsURL, lang string) (*Stream, error) {
+	return dial(ctx, wsURL, c.cred, c.meResolver, lang, DialOptions{BasicAuth: c.basicAuth, Trace: c.Trace})
+}
+
+// DialWithCredential opens the price feed. An API key is sent as X-Api-Key
+// and as `api_key` on the query string (the documented handshake). A Bearer
+// token is resolved via resolver to the token/jwt query parameters the
+// stream actually requires — see [Credential.ApplyTo]; resolver must be
+// non-nil whenever cred carries a Bearer token.
+func DialWithCredential(ctx context.Context, wsURL string, cred Credential, resolver *MeResolver, lang string) (*Stream, error) {
+	return dial(ctx, wsURL, cred, resolver, lang, DialOptions{})
+}
+
+func dial(ctx context.Context, wsURL string, cred Credential, resolver *MeResolver, lang string, opts DialOptions) (*Stream, error) {
+	trace := opts.Trace
+	if trace == nil {
+		trace = func(string, ...any) {}
+	}
+
 	u, err := url.Parse(wsURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse stream URL %q: %w", wsURL, err)
 	}
 	q := u.Query()
-	q.Set("api_key", apiKey)
+	header := make(http.Header)
+	switch {
+	case strings.TrimSpace(cred.APIKey) != "":
+		key := strings.TrimSpace(cred.APIKey)
+		q.Set("api_key", key)
+		header.Set(APIKeyHeader, key)
+		trace("stream dial: credential=api_key ...%s", redactTail(key))
+	case strings.TrimSpace(cred.Bearer) != "":
+		trace("stream dial: credential=bearer ...%s, resolving via MeResolver", redactTail(cred.Bearer))
+		if resolver == nil {
+			return nil, fmt.Errorf("magicmarkets: OAuth credential set but no token resolver configured")
+		}
+		me, err := resolver.Resolve(ctx, cred.Bearer)
+		if err != nil {
+			trace("stream dial: MeResolver.Resolve failed: %v", err)
+			return nil, err
+		}
+		q.Set("token", me.Session)
+		q.Set("jwt", me.JWT)
+		trace("stream dial: resolved token=%s jwt=...%s", me.Session, redactTail(me.JWT))
+	default:
+		trace("stream dial: no credential set")
+	}
 	if lang != "" {
 		q.Set("lang", lang)
 	}
 	u.RawQuery = q.Encode()
+
+	if basicAuth := strings.TrimSpace(opts.BasicAuth); basicAuth != "" {
+		header.Set(AuthorizationHeader, "Basic "+basicAuth)
+		trace("stream dial: basic auth wall header attached (...%s)", redactTail(basicAuth))
+	} else {
+		trace("stream dial: no basic auth wall credential configured")
+	}
+
+	trace("stream dial: connecting to %s%s (query keys: %s)", u.Host, u.Path, strings.Join(sortedKeys(q), ","))
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 20 * time.Second,
 		Proxy:            http.ProxyFromEnvironment,
 	}
 
-	conn, resp, err := dialer.DialContext(ctx, u.String(), nil)
+	conn, resp, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
 		if resp != nil {
-			return nil, fmt.Errorf("stream handshake failed (HTTP %d): %w — check the API key", resp.StatusCode, err)
+			trace("stream dial: handshake failed, HTTP %d, WWW-Authenticate=%q", resp.StatusCode, resp.Header.Get("Www-Authenticate"))
+			return nil, fmt.Errorf("stream handshake failed (HTTP %d): %w — check the credentials", resp.StatusCode, err)
 		}
+		trace("stream dial: handshake failed before a response: %v", err)
 		return nil, fmt.Errorf("stream handshake failed: %w", err)
 	}
+	trace("stream dial: handshake ok, HTTP %d", resp.StatusCode)
 	return &Stream{conn: conn}, nil
+}
+
+// sortedKeys returns q's parameter names, sorted, so a trace line lists what
+// was sent without leaking secret values.
+func sortedKeys(q url.Values) []string {
+	keys := make([]string, 0, len(q))
+	for k := range q {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // ReadFrame reads and parses the next batch envelope.

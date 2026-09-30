@@ -39,20 +39,28 @@ func (a *App) Client() (*magicmarkets.Client, error) {
 	if a.client != nil {
 		return a.client, nil
 	}
-	if err := a.cfg.RequireKey(); err != nil {
+	if err := a.cfg.RequireAuth(); err != nil {
 		return nil, err
 	}
 
+	resolver := magicmarkets.NewMeResolver(a.cfg.OAuthIssuer, a.cfg.SessionGroupID, a.cfg.FirebaseWebAPIKey, nil)
 	opts := []magicmarkets.Option{
 		magicmarkets.WithUserAgent("magicmarkets-cli/" + a.version),
+		magicmarkets.WithMeResolver(resolver),
+		magicmarkets.WithBasicAuth(a.cfg.BasicAuth),
 	}
 	if a.verbose {
-		opts = append(opts, magicmarkets.WithTrace(func(format string, args ...any) {
+		trace := func(format string, args ...any) {
 			a.printer.Warnf("→ "+format+"\n", args...)
-		}))
+		}
+		opts = append(opts, magicmarkets.WithTrace(trace))
+		resolver.Trace = trace
 	}
 
-	a.client = magicmarkets.New(a.cfg.APIURL, a.cfg.APIKey, a.cfg.Timeout, opts...)
+	a.client = magicmarkets.NewWithCredential(a.cfg.APIURL, magicmarkets.Credential{
+		APIKey: a.cfg.APIKey,
+		Bearer: a.cfg.AccessToken,
+	}, a.cfg.Timeout, opts...)
 	return a.client, nil
 }
 
@@ -66,12 +74,12 @@ func (a *App) Stream(ctx context.Context) (*magicmarkets.Stream, error) {
 		return nil, err
 	}
 	if err := client.VerifyKey(ctx); err != nil {
-		return nil, fmt.Errorf("API key rejected: %w", err)
+		return nil, fmt.Errorf("credentials rejected: %w", err)
 	}
 	if a.verbose {
-		a.printer.Warnf("→ WS %s\n", a.cfg.WSURL)
+		a.printer.Warnf("→ WS %s (basic auth: %s)\n", a.cfg.WSURL, basicAuthStatus(a.cfg.BasicAuth))
 	}
-	return magicmarkets.Dial(ctx, a.cfg.WSURL, a.cfg.APIKey, a.cfg.Lang)
+	return client.DialStream(ctx, a.cfg.WSURL, a.cfg.Lang)
 }
 
 // ExecuteContext builds the command tree and runs it under ctx.
@@ -93,8 +101,8 @@ Stream live prices, quote selections as betslips, place and manage orders, and
 inspect your position — all authenticated with a single API key.
 
 Authentication:
-  Set MAGICMARKETS_API_KEY in the environment or in ./.env, ~/.magicmarkets/.env or ~/.env.
-  Create a key at magicmarkets.com under Settings → API.
+  Set MAGICMARKETS_API_KEY or MAGICMARKETS_ACCESS_TOKEN in the environment or in ./.env, ~/.magicmarkets/.env or ~/.env.
+  Create a key at magicmarkets.com under Settings → API, or use an OAuth access token.
 
 The two-step bet flow:
   A betslip registers interest in one selection and receives a live quote; an

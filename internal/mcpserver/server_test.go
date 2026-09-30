@@ -3,10 +3,12 @@ package mcpserver
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -205,7 +207,7 @@ func TestHTTPProbesDoNotRequireAPIKey(t *testing.T) {
 	}
 }
 
-func TestHTTPRequiresAPIKey(t *testing.T) {
+func TestHTTPRequiresCredential(t *testing.T) {
 	s := newTestHTTPServer(t)
 	ts := httptest.NewServer(s.httpHandler())
 	defer ts.Close()
@@ -214,11 +216,12 @@ func TestHTTPRequiresAPIKey(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		apiKey string
+		header http.Header
 		want   int
 	}{
-		{"no key", "", http.StatusUnauthorized},
-		{"client key", "caller-key", http.StatusOK},
+		{"no credential", nil, http.StatusUnauthorized},
+		{"api key", http.Header{magicmarkets.APIKeyHeader: []string{"caller-key"}}, http.StatusOK},
+		{"bearer", http.Header{"Authorization": []string{"Bearer oauth-tok"}}, http.StatusOK},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -228,8 +231,10 @@ func TestHTTPRequiresAPIKey(t *testing.T) {
 			}
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Accept", "application/json, text/event-stream")
-			if c.apiKey != "" {
-				req.Header.Set(magicmarkets.APIKeyHeader, c.apiKey)
+			for k, vals := range c.header {
+				for _, v := range vals {
+					req.Header.Set(k, v)
+				}
 			}
 
 			resp, err := http.DefaultClient.Do(req)
@@ -240,6 +245,11 @@ func TestHTTPRequiresAPIKey(t *testing.T) {
 
 			if resp.StatusCode != c.want {
 				t.Errorf("status = %d, want %d", resp.StatusCode, c.want)
+			}
+			if c.want == http.StatusUnauthorized {
+				if wa := resp.Header.Get("WWW-Authenticate"); !strings.Contains(wa, "resource_metadata=") {
+					t.Errorf("WWW-Authenticate = %q, want resource_metadata for OAuth discovery", wa)
+				}
 			}
 			if c.want == http.StatusOK {
 				ct := resp.Header.Get("Content-Type")
@@ -356,6 +366,11 @@ func TestHTTPToolCallDoesNotNeedStickySessions(t *testing.T) {
 // Markets API and returns an SDK client session.
 func connectHTTPSession(t *testing.T, api http.HandlerFunc) *mcp.ClientSession {
 	t.Helper()
+	return connectHTTPSessionWithTransport(t, api, apiKeyTransport{key: "caller-key"})
+}
+
+func connectHTTPSessionWithTransport(t *testing.T, api http.HandlerFunc, rt http.RoundTripper) *mcp.ClientSession {
+	t.Helper()
 	upstream := httptest.NewServer(api)
 	t.Cleanup(upstream.Close)
 
@@ -373,7 +388,7 @@ func connectHTTPSession(t *testing.T, api http.HandlerFunc) *mcp.ClientSession {
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcpserver-test", Version: "test"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:   ts.URL + HTTPPath,
-		HTTPClient: &http.Client{Transport: apiKeyTransport{key: "caller-key"}},
+		HTTPClient: &http.Client{Transport: rt},
 	}, nil)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -406,6 +421,185 @@ func structuredObject(t *testing.T, res *mcp.CallToolResult) map[string]any {
 		t.Fatalf("structured content = %s, want a JSON object so MCP clients can display it", raw)
 	}
 	return got
+}
+
+func TestHTTPProtectedResourceMetadata(t *testing.T) {
+	s := New(nil, &config.Config{
+		APIURL:      "https://example.invalid/v2",
+		OAuthIssuer: "https://magicmarkets.com/api/auth",
+	}, Options{Version: "test", PublicURL: "https://mcp.example.test"})
+	ts := httptest.NewServer(s.httpHandler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/.well-known/oauth-protected-resource")
+	if err != nil {
+		t.Fatalf("GET metadata: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	if got["resource"] != "https://mcp.example.test/mcp" {
+		t.Errorf("resource = %v, want https://mcp.example.test/mcp", got["resource"])
+	}
+	servers, _ := got["authorization_servers"].([]any)
+	if len(servers) != 1 || servers[0] != "https://mcp.example.test" {
+		t.Errorf("authorization_servers = %v, want this MCP host", got["authorization_servers"])
+	}
+}
+
+type bearerTransport struct {
+	base  http.RoundTripper
+	token string
+}
+
+func (t bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set(magicmarkets.AuthorizationHeader, "Bearer "+t.token)
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
+}
+
+// fakeAccessToken builds a JWT-shaped string carrying only a "sub" claim in its (unsigned)
+// payload — enough for magicmarkets.MeResolver to read a subject from it locally. The
+// resolver never verifies the signature client-side; that happens server-side, in the
+// firebase-token exchange call it makes.
+func fakeAccessToken(sub string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"` + sub + `"}`))
+	return header + "." + payload + ".sig"
+}
+
+type hostRedirectTransport struct {
+	host   string
+	target *url.URL
+}
+
+// redirectHost builds a RoundTripper that sends requests to host to target instead, leaving
+// every other request untouched. Google's Identity Toolkit endpoint
+// (identitytoolkit.googleapis.com) is a hardcoded const in internal/magicmarkets/meauth.go, not
+// a config knob — this is how a test stands in for it without any override hook in production
+// code.
+func redirectHost(t *testing.T, host, target string) http.RoundTripper {
+	t.Helper()
+	u, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("redirectHost: parse target %q: %v", target, err)
+	}
+	return hostRedirectTransport{host: host, target: u}
+}
+
+func (t hostRedirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host == t.host {
+		req = req.Clone(req.Context())
+		req.URL.Scheme = t.target.Scheme
+		req.URL.Host = t.target.Host
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// TestHTTPGetExchangeRatesResolvesBearerViaFirebaseTokenExchange checks the
+// OAuth leg end to end: a caller's Bearer token must never reach the v2 API
+// as-is — it's exchanged via POST {OAuthIssuer}/oauth2/firebase-token first,
+// and the magic-metadata-jwt/session pair that comes back is what actually
+// goes out.
+func TestHTTPGetExchangeRatesResolvesBearerViaFirebaseTokenExchange(t *testing.T) {
+	accessToken := fakeAccessToken("user-uuid")
+	var meCalls int
+	var gotJWT, gotSession, gotKey string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth2/firebase-token", func(w http.ResponseWriter, r *http.Request) {
+		meCalls++
+		if got := r.Header.Get(magicmarkets.AuthorizationHeader); got != "Bearer "+accessToken {
+			t.Errorf("firebase-token exchange Authorization = %q, want Bearer %s", got, accessToken)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"firebase_token":"me-custom-token"}`))
+	})
+	mux.HandleFunc("/v1/accounts:signInWithCustomToken", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"idToken":"me-jwt"}`))
+	})
+	mux.HandleFunc("/xrates/", func(w http.ResponseWriter, r *http.Request) {
+		gotJWT = r.Header.Get(magicmarkets.MagicMetadataJWTHeader)
+		gotSession = r.Header.Get(magicmarkets.SessionHeader)
+		gotKey = r.Header.Get(magicmarkets.APIKeyHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","data":[{"ccy":"EUR","rate":1.08}]}`))
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	cfg := &config.Config{
+		APIURL:            ts.URL,
+		WSURL:             "wss://example.invalid/v2/stream",
+		Lang:              "en",
+		Timeout:           time.Second,
+		OAuthIssuer:       ts.URL,
+		SessionGroupID:    "7",
+		FirebaseWebAPIKey: "web-api-key",
+	}
+	s := New(nil, cfg, Options{Version: "test"})
+	// identityToolkitSignInURL (internal/magicmarkets/meauth.go) is a hardcoded const, not a
+	// config knob — redirect it at the transport level instead, same package, test-only.
+	s.httpClient = &http.Client{Transport: redirectHost(t, "identitytoolkit.googleapis.com", ts.URL)}
+	mcpTS := httptest.NewServer(s.httpHandler())
+	t.Cleanup(mcpTS.Close)
+
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "mcpserver-test", Version: "test"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   mcpTS.URL + HTTPPath,
+		HTTPClient: &http.Client{Transport: bearerTransport{token: accessToken}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "get_exchange_rates"})
+	if err != nil {
+		t.Fatalf("get_exchange_rates protocol error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("get_exchange_rates isError: %s", toolText(t, res))
+	}
+	if gotJWT != "me-jwt" {
+		t.Errorf("upstream magic-metadata-jwt = %q, want me-jwt", gotJWT)
+	}
+	if gotSession != "m-7-user-uuid" {
+		t.Errorf("upstream session = %q, want m-7-user-uuid", gotSession)
+	}
+	if gotKey != "" {
+		t.Errorf("upstream X-Api-Key = %q, want empty", gotKey)
+	}
+	if meCalls != 1 {
+		t.Errorf("firebase-token exchange was called %d times, want 1", meCalls)
+	}
+
+	// A second call on the same access token within MeCacheTTL must reuse
+	// the cached credential rather than repeating the exchange.
+	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "get_exchange_rates"})
+	if err != nil {
+		t.Fatalf("get_exchange_rates (2nd) protocol error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("get_exchange_rates (2nd) isError: %s", toolText(t, res))
+	}
+	if meCalls != 1 {
+		t.Errorf("firebase-token exchange was called %d times across two tool calls, want 1 (cache should have hit)", meCalls)
+	}
 }
 
 func TestHTTPGetExchangeRatesReturnsObjectForClients(t *testing.T) {

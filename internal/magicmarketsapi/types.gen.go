@@ -566,8 +566,14 @@ type BetslipCreateRequest struct {
 	Legs *[]struct {
 		BetType string `json:"bet_type"`
 		EventID string `json:"event_id"`
-		Sport   string `json:"sport"`
+
+		// LiveScore In-running score this leg is selected against, or null
+		LiveScore *LiveScore `json:"live_score,omitempty"`
+		Sport     string     `json:"sport"`
 	} `json:"legs,omitempty"`
+
+	// LiveScore The in-running score you are selecting against, e.g. `{"home": 1, "away": 0}`. Liquidity a source is quoting at a different in-running score is then never treated as equivalent to your selection, so a line that has already moved on a goal cannot be matched against it. The score stays on the betslip and applies again when an order placed on it re-selects liquidity. Omit it (or send null) for pre-match selections and to accept quotes at whatever score a source is on.
+	LiveScore *LiveScore `json:"live_score,omitempty"`
 
 	// Sport Sport code (required for normal/lay) - see "Sports & bet types" in the introduction.
 	Sport    *string `json:"sport,omitempty"`
@@ -604,6 +610,9 @@ type BetslipCreateResponse struct {
 
 	// Legs Parlay legs (only present for parlay betslips)
 	Legs *ParlayLegList `json:"legs,omitempty"`
+
+	// LiveScore The in-running score the betslip was opened at, as supplied on create; null when none was given (pre-match selections).
+	LiveScore *LiveScore `json:"live_score,omitempty"`
 
 	// Sport Sport code - see "Sports & bet types" in the introduction.
 	Sport    *string `json:"sport,omitempty"`
@@ -659,6 +668,9 @@ type BetslipResponse struct {
 
 	// Legs Parlay legs (only present for parlay betslips)
 	Legs *ParlayLegList `json:"legs,omitempty"`
+
+	// LiveScore The in-running score the betslip was opened at, as supplied on create; null when none was given (pre-match selections).
+	LiveScore *LiveScore `json:"live_score,omitempty"`
 
 	// PriceList Prices sorted descending (best price first). May be empty until quotes arrive, or when no source is currently quoting.
 	PriceList *[]PriceLevel `json:"price_list,omitempty"`
@@ -837,6 +849,15 @@ type HeartbeatResponse struct {
 	HeartbeatID *string    `json:"heartbeat_id,omitempty"`
 }
 
+// LiveScore In-running score at a point in time, `{home, away}`.
+type LiveScore struct {
+	// Away Away-team score
+	Away int `json:"away"`
+
+	// Home Home-team score
+	Home int `json:"home"`
+}
+
 // OrderCreateRequest defines model for OrderCreateRequest.
 type OrderCreateRequest struct {
 	AcceptBetterPrice *bool  `json:"accept_better_price,omitempty"`
@@ -921,9 +942,12 @@ type OrderResponse struct {
 	CcyRate *float64 `json:"ccy_rate,omitempty"`
 
 	// CloseReason Reason the order closed, e.g. order_filled, timed_out; null while open
-	CloseReason *string    `json:"close_reason,omitempty"`
-	Closed      *bool      `json:"closed,omitempty"`
-	EventInfo   *EventInfo `json:"event_info,omitempty"`
+	CloseReason *string `json:"close_reason,omitempty"`
+	Closed      *bool   `json:"closed,omitempty"`
+
+	// CurrentScore The in-running score the exchange held for the event when the order was placed, `[home, away]`; null for pre-match orders and for events without a running score.
+	CurrentScore *[]int     `json:"current_score,omitempty"`
+	EventInfo    *EventInfo `json:"event_info,omitempty"`
 
 	// ExchangeMode Exchange interaction mode as passed at creation; null on older orders
 	ExchangeMode *OrderResponseExchangeMode `json:"exchange_mode,omitempty"`
@@ -968,6 +992,9 @@ type ParlayLeg struct {
 	BetTypeDescription *string `json:"bet_type_description,omitempty"`
 	EventID            *string `json:"event_id,omitempty"`
 	ID                 *int    `json:"id,omitempty"`
+
+	// LiveScore In-running score this leg was selected against, or null
+	LiveScore *LiveScore `json:"live_score,omitempty"`
 
 	// Outcome Leg settlement: `w` won, `l` lost, `v` void, `v/w` win-void, `l/v` void-loss, `l/w` loss-win (half outcomes), `unknown`, or null before settlement.
 	Outcome *ParlayLegOutcome `json:"outcome,omitempty"`

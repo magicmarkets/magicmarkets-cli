@@ -1,8 +1,9 @@
 // Package config loads magicmarkets-cli configuration from .env files and the
 // environment.
 //
-// Only an API key is needed — the Magic Markets v2 API authenticates with a
-// single X-Api-Key header. There is no request signing and no private key.
+// The Magic Markets v2 API authenticates with an X-Api-Key header or an OAuth
+// Bearer access token. There is no request signing. The WebSocket stream
+// accepts the same credentials as REST.
 package config
 
 import (
@@ -16,8 +17,9 @@ import (
 
 // Default endpoints for the public Magic Markets API.
 const (
-	DefaultAPIURL = "https://magicmarkets.com/v2"
-	DefaultLang   = "en"
+	DefaultAPIURL      = "https://magicmarkets.com/v2"
+	DefaultLang        = "en"
+	DefaultOAuthIssuer = "https://magicmarkets.com/api/auth"
 )
 
 // Config holds everything the client needs to talk to the API.
@@ -25,6 +27,57 @@ type Config struct {
 	// APIKey is the X-Api-Key value. Created at magicmarkets.com under
 	// Settings → API and shown only once.
 	APIKey string
+
+	// AccessToken is an OAuth Bearer token (MAGICMARKETS_ACCESS_TOKEN). Used
+	// when APIKey is empty, for CLI and stdio MCP.
+	AccessToken string
+
+	// OAuthIssuer is the Magic Markets Authorization Server, advertised by
+	// `magicmarkets mcp --http` so MCP clients can obtain a Bearer token.
+	OAuthIssuer string
+
+	// MCPPublicURL is the externally-reachable base of the HTTP MCP server
+	// (no trailing /mcp). Used in OAuth protected-resource metadata.
+	MCPPublicURL string
+
+	// OAuthClientID is a pre-registered public client on the Magic Markets
+	// Authorization Server. HTTP MCP's /authorize and /token substitute this
+	// id when proxying Claude's Authorization Code flow upstream.
+	OAuthClientID string
+
+	// OAuthProxySecret seals the HTTP MCP OAuth proxy's DCR client_ids,
+	// in-flight login state, and one-time codes so no server-side session
+	// storage is needed. Every replica of a multi-replica deployment must
+	// share the same value, or a request that lands on a different replica
+	// than the one that minted a token can't decode it. A single-process
+	// deployment can leave this unset — a random per-process key is used.
+	OAuthProxySecret string
+
+	// SessionGroupID (MAGICMARKETS_SESSION_GROUP_ID) is the environment-
+	// specific id Magic Markets assigns to build the `session` value
+	// ("m-<group id>-<user uuid>") an OAuth Bearer credential resolves to
+	// via POST {OAuthIssuer}/oauth2/firebase-token — see
+	// magicmarkets.MeResolver. It differs per environment and has no safe
+	// default, so it must be set explicitly wherever an OAuth-authenticated
+	// caller is expected.
+	SessionGroupID string
+
+	// FirebaseWebAPIKey (MAGICMARKETS_FIREBASE_WEB_API_KEY) is the Magic
+	// Markets Firebase project's Web API key, used to redeem the Firebase
+	// custom token from POST {OAuthIssuer}/oauth2/firebase-token for a real
+	// Firebase ID token via Google's signInWithCustomToken — see
+	// magicmarkets.MeResolver. It differs per environment (STG and prod are
+	// different Firebase projects) and has no safe default, so it must be
+	// set explicitly wherever an OAuth-authenticated caller is expected.
+	FirebaseWebAPIKey string
+
+	// BasicAuth (MAGICMARKETS_BASIC_AUTH) is the base64 "user:pass" token sent
+	// as an additional Authorization: Basic header, on top of whatever
+	// credential headers the request already carries. Some non-production
+	// environments sit behind an infra-level HTTP Basic Auth wall in front
+	// of the v2 API; production has none, so this is empty by default — see
+	// magicmarkets.WithBasicAuth.
+	BasicAuth string
 
 	// APIURL is the REST base, including the /v2 suffix.
 	APIURL string
@@ -84,6 +137,14 @@ func Load() (*Config, error) {
 	}
 
 	cfg.APIKey = firstEnv("MAGICMARKETS_API_KEY", "MAGICMARKETS_APIKEY", "MAGICMARKETS_API_KEY")
+	cfg.AccessToken = firstEnv("MAGICMARKETS_ACCESS_TOKEN", "MAGICMARKETS_BEARER_TOKEN")
+	cfg.OAuthIssuer = strings.TrimRight(firstEnv("MAGICMARKETS_OAUTH_ISSUER"), "/")
+	cfg.OAuthClientID = firstEnv("MAGICMARKETS_OAUTH_CLIENT_ID")
+	cfg.OAuthProxySecret = firstEnv("MAGICMARKETS_OAUTH_PROXY_SECRET")
+	cfg.SessionGroupID = firstEnv("MAGICMARKETS_SESSION_GROUP_ID")
+	cfg.FirebaseWebAPIKey = firstEnv("MAGICMARKETS_FIREBASE_WEB_API_KEY")
+	cfg.BasicAuth = firstEnv("MAGICMARKETS_BASIC_AUTH")
+	cfg.MCPPublicURL = strings.TrimRight(firstEnv("MAGICMARKETS_MCP_PUBLIC_URL"), "/")
 	cfg.APIURL = strings.TrimRight(firstEnv("MAGICMARKETS_API_URL", "MAGICMARKETS_BASE_URL"), "/")
 	cfg.WSURL = firstEnv("MAGICMARKETS_WS_URL")
 	cfg.Lang = firstEnv("MAGICMARKETS_LANG")
@@ -93,6 +154,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.Lang == "" {
 		cfg.Lang = DefaultLang
+	}
+	if cfg.OAuthIssuer == "" {
+		cfg.OAuthIssuer = DefaultOAuthIssuer
 	}
 	if cfg.WSURL == "" {
 		cfg.WSURL = DeriveWSURL(cfg.APIURL)
@@ -134,28 +198,38 @@ func parseBool(v string) (bool, error) {
 	}
 }
 
-// RequireKey returns an actionable error when no API key is configured.
-func (c *Config) RequireKey() error {
-	if c.APIKey != "" {
+// RequireAuth returns an actionable error when neither an API key nor an
+// OAuth access token is configured.
+func (c *Config) RequireAuth() error {
+	if c.APIKey != "" || c.AccessToken != "" {
 		return nil
 	}
-	return fmt.Errorf("no API key configured\n\n" +
-		"Set MAGICMARKETS_API_KEY in the environment or in one of:\n" +
+	return fmt.Errorf("no credentials configured\n\n" +
+		"Set MAGICMARKETS_API_KEY or MAGICMARKETS_ACCESS_TOKEN in the environment or in one of:\n" +
 		"  ./.env\n  ~/.magicmarkets/.env\n  ~/.env\n\n" +
 		"Create a key at magicmarkets.com under Settings → API " +
-		"(it is shown only once).")
+		"(it is shown only once), or obtain an OAuth access token from " +
+		DefaultOAuthIssuer + ".")
 }
 
-// RedactedKey returns the key with all but the last 4 characters masked.
-func (c *Config) RedactedKey() string {
-	if c.APIKey == "" {
+// RequireKey is [Config.RequireAuth].
+func (c *Config) RequireKey() error { return c.RequireAuth() }
+
+func redactSecret(v string) string {
+	if v == "" {
 		return "(unset)"
 	}
-	if len(c.APIKey) <= 4 {
-		return strings.Repeat("*", len(c.APIKey))
+	if len(v) <= 4 {
+		return strings.Repeat("*", len(v))
 	}
-	return strings.Repeat("*", len(c.APIKey)-4) + c.APIKey[len(c.APIKey)-4:]
+	return strings.Repeat("*", len(v)-4) + v[len(v)-4:]
 }
+
+// RedactedKey returns the API key with all but the last 4 characters masked.
+func (c *Config) RedactedKey() string { return redactSecret(c.APIKey) }
+
+// RedactedAccessToken returns the OAuth token with all but the last 4 characters masked.
+func (c *Config) RedactedAccessToken() string { return redactSecret(c.AccessToken) }
 
 // DeriveWSURL turns an https REST base into its wss stream endpoint.
 //

@@ -27,13 +27,19 @@ type priceLevel struct {
 }
 
 type parlayLeg struct {
-	ID                 int      `json:"id,omitempty"`
-	Sport              string   `json:"sport"`
-	EventID            string   `json:"event_id"`
-	BetType            string   `json:"bet_type"`
-	BetTypeDescription string   `json:"bet_type_description,omitempty"`
-	Price              *float64 `json:"price,omitempty"`
-	Outcome            string   `json:"outcome,omitempty"`
+	ID                 int        `json:"id,omitempty"`
+	Sport              string     `json:"sport"`
+	EventID            string     `json:"event_id"`
+	BetType            string     `json:"bet_type"`
+	BetTypeDescription string     `json:"bet_type_description,omitempty"`
+	Price              *float64   `json:"price,omitempty"`
+	Outcome            string     `json:"outcome,omitempty"`
+	LiveScore          *liveScore `json:"live_score,omitempty"`
+}
+
+type liveScore struct {
+	Home int `json:"home"`
+	Away int `json:"away"`
 }
 
 // eventSummary is a non-recursive event description (parlay legs, nested
@@ -100,6 +106,7 @@ type order struct {
 	Stake              *stake      `json:"stake,omitempty"`
 	ProfitLoss         *stake      `json:"profit_loss,omitempty"`
 	Legs               []parlayLeg `json:"legs,omitempty"`
+	CurrentScore       []int       `json:"current_score,omitempty"`
 }
 
 type heartbeat struct {
@@ -122,6 +129,7 @@ type betslip struct {
 	TotalAvailable     *stake       `json:"total_available,omitempty"`
 	CloseReason        string       `json:"close_reason,omitempty"`
 	Legs               []parlayLeg  `json:"legs,omitempty"`
+	LiveScore          *liveScore   `json:"live_score,omitempty"`
 	Warning            string       `json:"warning,omitempty"`
 	NextStep           string       `json:"next_step,omitempty"`
 }

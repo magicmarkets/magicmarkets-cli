@@ -16,13 +16,18 @@ import (
 
 // Client is a Magic Markets v2 REST client.
 //
-// Every request carries the API key in the [APIKeyHeader] header. There is no
-// request signing.
+// Every request carries either an API key in [APIKeyHeader], applied
+// unchanged, or a magic-metadata-jwt/session pair resolved from an OAuth
+// Bearer credential via [MeResolver] — see [Credential.ApplyTo]. There is no
+// request signing. The WebSocket stream uses the same credential — see
+// [Client.DialStream].
 type Client struct {
 	baseURL    string
-	apiKey     string
+	cred       Credential
+	meResolver *MeResolver
 	httpClient *http.Client
 	userAgent  string
+	basicAuth  string
 
 	// maxRetries bounds automatic retries of throttled (429) requests.
 	maxRetries int
@@ -58,11 +63,36 @@ func WithTrace(fn func(format string, args ...any)) Option {
 	return func(c *Client) { c.Trace = fn }
 }
 
-// New creates a client for the given base URL (including the /v2 suffix).
+// WithBasicAuth sets an additional Authorization: Basic header, sent
+// alongside whatever [Credential] header(s) the request already carries.
+// Some non-production environments sit behind an infra-level HTTP Basic Auth
+// wall in front of the v2 API; production has no such wall. value is the
+// already base64-encoded "user:pass" token (i.e. what follows "Basic " on
+// the wire) — pass it empty (the default) to send nothing.
+func WithBasicAuth(value string) Option {
+	return func(c *Client) { c.basicAuth = strings.TrimSpace(value) }
+}
+
+// WithMeResolver installs the resolver used to turn a Bearer credential into
+// the magic-metadata-jwt/session pair the v2 API and the stream require —
+// see [MeResolver]. Required whenever the client may be given a Bearer
+// credential; unused for an API key credential.
+func WithMeResolver(resolver *MeResolver) Option {
+	return func(c *Client) { c.meResolver = resolver }
+}
+
+// New creates a client for the given base URL (including the /v2 suffix),
+// authenticated with a static API key.
 func New(baseURL, apiKey string, timeout time.Duration, opts ...Option) *Client {
+	return NewWithCredential(baseURL, Credential{APIKey: apiKey}, timeout, opts...)
+}
+
+// NewWithCredential creates a client authenticated with either an API key or
+// an OAuth Bearer token. The same credential is sent on REST and on the stream.
+func NewWithCredential(baseURL string, cred Credential, timeout time.Duration, opts ...Option) *Client {
 	c := &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		apiKey:     apiKey,
+		cred:       cred,
 		httpClient: &http.Client{Timeout: timeout},
 		userAgent:  "magicmarkets-cli",
 		maxRetries: 2,
@@ -150,14 +180,19 @@ func (c *Client) attempt(ctx context.Context, method, endpoint string, payload [
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set(APIKeyHeader, c.apiKey)
+	if err := c.cred.ApplyTo(ctx, req.Header, c.meResolver); err != nil {
+		return nil, err
+	}
+	if c.basicAuth != "" {
+		req.Header.Set(AuthorizationHeader, "Basic "+c.basicAuth)
+	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.userAgent)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := NoRedirectClient(c.httpClient).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", method, endpoint, err)
 	}

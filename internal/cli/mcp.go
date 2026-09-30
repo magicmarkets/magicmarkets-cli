@@ -16,6 +16,7 @@ func (a *App) newMCPCmd() *cobra.Command {
 		printTools bool
 		httpMode   bool
 		addr       string
+		publicURL  string
 	)
 
 	cmd := &cobra.Command{
@@ -71,9 +72,10 @@ Serving over HTTP instead of stdio:
   magicmarkets mcp --http --addr 127.0.0.1:8383
 
 --addr defaults to 127.0.0.1:8383 — loopback-only. The process does not
-need MAGICMARKETS_API_KEY. Every MCP request must carry the caller's key
-in an X-Api-Key header; that is the credential used against the Magic
-Markets API. Point a client's MCP config at the URL:
+need MAGICMARKETS_API_KEY. Every MCP request must carry the caller's
+credential as X-Api-Key or Authorization: Bearer; that is what is used
+against the Magic Markets API (REST and /v2/stream). Point a client's MCP
+config at the URL:
 
   {
     "mcpServers": {
@@ -83,6 +85,29 @@ Markets API. Point a client's MCP config at the URL:
       }
     }
   }
+
+Or, with an OAuth access token:
+
+  {
+    "mcpServers": {
+      "magicmarkets": {
+        "url": "http://127.0.0.1:8383/mcp",
+        "headers": { "Authorization": "Bearer your-token" }
+      }
+    }
+  }
+
+The HTTP listener is its own OAuth Authorization Server for MCP discovery:
+protected-resource metadata names this host, not
+https://magicmarkets.com/api/auth, so Claude POSTs /register here (JSON)
+instead of the website HTML 404. /authorize runs this process's own PKCE
+login against the Magic Markets issuer (scope mcp), using this host's own
+/mcp/callback — never the downstream client's redirect_uri, which the real
+issuer would reject. Pass --public-url when a reverse proxy sits in front.
+Set MAGICMARKETS_OAUTH_CLIENT_ID to a client on that issuer whose
+redirect_uris allowlist this host's /mcp/callback, and
+MAGICMARKETS_OAUTH_PROXY_SECRET to the same value on every replica (the
+proxy keeps no server-side session state).
 
 Verify which tools would be registered with: magicmarkets mcp --print-tools`,
 		Args: cobra.NoArgs,
@@ -98,6 +123,7 @@ Verify which tools would be registered with: magicmarkets mcp --print-tools`,
 				AllowTrading:    trading,
 				Version:         a.version,
 				SnapshotTimeout: timeout,
+				PublicURL:       publicURL,
 			}
 
 			// --print-tools is a diagnostic: it answers "is trading on?" without
@@ -120,8 +146,8 @@ Verify which tools would be registered with: magicmarkets mcp --print-tools`,
 			}
 
 			if httpMode {
-				// The process holds no API key. Callers send X-Api-Key; that
-				// value is used for Magic Markets requests.
+				// The process holds no API key. Callers send X-Api-Key or
+				// Authorization: Bearer; that value is used for Magic Markets.
 				return mcpserver.New(nil, a.cfg, opts).ServeHTTP(ctx(cmd), addr)
 			}
 
@@ -151,6 +177,8 @@ Verify which tools would be registered with: magicmarkets mcp --print-tools`,
 		"serve the MCP streamable HTTP transport instead of stdio")
 	fl.StringVar(&addr, "addr", "127.0.0.1:8383",
 		"address to listen on in --http mode")
+	fl.StringVar(&publicURL, "public-url", "",
+		"externally reachable base URL in --http mode (OAuth resource metadata)")
 	return cmd
 }
 

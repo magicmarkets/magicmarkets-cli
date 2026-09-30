@@ -10,6 +10,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -35,13 +36,26 @@ type Options struct {
 	// SnapshotTimeout bounds how long the event and offer tools wait on the
 	// stream before giving up.
 	SnapshotTimeout time.Duration
+
+	// PublicURL is the externally-reachable base of this server, without a
+	// trailing /mcp. Advertised in OAuth protected-resource metadata so a
+	// remote client can complete the Magic Markets Authorization Code flow.
+	// When empty, metadata uses the incoming request's host.
+	PublicURL string
+
+	// OAuthIssuer is the Magic Markets Authorization Server this host proxies
+	// /authorize and /token to. Protected-resource metadata still names *this*
+	// server as the AS so Claude's DCR hits /register here — see oauth.go.
+	OAuthIssuer string
 }
 
 // Server wires the API client into an MCP server.
 type Server struct {
-	client *magicmarkets.Client
-	cfg    *config.Config
-	opts   Options
+	client     *magicmarkets.Client
+	cfg        *config.Config
+	opts       Options
+	seal       *sealer
+	httpClient *http.Client
 }
 
 // New builds the MCP server.
@@ -49,7 +63,30 @@ func New(client *magicmarkets.Client, cfg *config.Config, opts Options) *Server 
 	if opts.SnapshotTimeout <= 0 {
 		opts.SnapshotTimeout = 30 * time.Second
 	}
-	return &Server{client: client, cfg: cfg, opts: opts}
+	if opts.OAuthIssuer == "" {
+		if cfg != nil && cfg.OAuthIssuer != "" {
+			opts.OAuthIssuer = cfg.OAuthIssuer
+		} else {
+			opts.OAuthIssuer = config.DefaultOAuthIssuer
+		}
+	}
+	if opts.PublicURL == "" && cfg != nil {
+		opts.PublicURL = cfg.MCPPublicURL
+	}
+	secret := ""
+	if cfg != nil {
+		secret = cfg.OAuthProxySecret
+	}
+	if secret == "" {
+		secret = randomSecret()
+	}
+	return &Server{
+		client:     client,
+		cfg:        cfg,
+		opts:       opts,
+		seal:       newSealer(secret),
+		httpClient: http.DefaultClient,
+	}
 }
 
 // Serve registers every tool and serves MCP over stdio.
@@ -63,9 +100,22 @@ func (s *Server) Serve() error {
 // transport at addr, until ctx is cancelled.
 //
 // The process does not hold a Magic Markets API key. Each request must
-// carry the caller's key in X-Api-Key; that value is used for upstream API
-// calls. /health and /live are unauthenticated for probes.
+// carry the caller's credential as X-Api-Key or Authorization: Bearer. An
+// API key is forwarded to the upstream API and stream unchanged; a Bearer
+// token is resolved via POST {OAuthIssuer}/oauth2/firebase-token to the
+// magic-metadata-jwt and session values they actually require — see
+// magicmarkets.MeResolver. /health and /live are unauthenticated for probes.
+// OAuth discovery names
+// this process as the Authorization Server so Claude's DCR hits /register
+// here; /authorize and /token proxy to the Magic Markets issuer — see
+// oauth.go.
 func (s *Server) ServeHTTP(ctx context.Context, addr string) error {
+	if s.cfg != nil && s.cfg.OAuthProxySecret == "" {
+		log.Printf("[mcp] MAGICMARKETS_OAUTH_PROXY_SECRET is not set — OAuth proxy state (DCR client_ids, " +
+			"in-flight logins, one-time codes) is sealed with a key generated for this process only. " +
+			"A single-replica deployment is fine; a multi-replica one must set this so a request routed " +
+			"to a different replica can still decode state minted by another")
+	}
 	httpServer := &http.Server{Addr: addr, Handler: s.httpHandler()}
 
 	errCh := make(chan error, 1)
@@ -86,21 +136,38 @@ func (s *Server) ServeHTTP(ctx context.Context, addr string) error {
 
 // httpHandler builds the mux ServeHTTP listens on, split out so tests can
 // exercise it without binding a real port.
+//
+// The /me resolver is built once here, not per request: its whole purpose is
+// a cache ([magicmarkets.MeCacheTTL]) that survives across calls on the same
+// access token, so it must outlive any single request — see [MeResolver].
 func (s *Server) httpHandler() http.Handler {
+	resolver := magicmarkets.NewMeResolver(s.opts.OAuthIssuer, s.cfg.SessionGroupID, s.cfg.FirebaseWebAPIKey, s.httpClient)
+
 	streamable := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		key := strings.TrimSpace(r.Header.Get(magicmarkets.APIKeyHeader))
-		if key == "" {
+		cred, ok := magicmarkets.CredentialFromHeaders(r.Header)
+		if !ok {
 			return nil
 		}
 		cfg := *s.cfg
-		cfg.APIKey = key
-		client := magicmarkets.New(cfg.APIURL, key, cfg.Timeout,
-			magicmarkets.WithUserAgent("magicmarkets-cli/"+s.opts.Version))
+		if cred.APIKey != "" {
+			cfg.APIKey = cred.APIKey
+			cfg.AccessToken = ""
+		} else {
+			cfg.AccessToken = cred.Bearer
+			cfg.APIKey = ""
+		}
+		clientOpts := []magicmarkets.Option{
+			magicmarkets.WithUserAgent("magicmarkets-cli/" + s.opts.Version),
+			magicmarkets.WithMeResolver(resolver),
+			magicmarkets.WithBasicAuth(cfg.BasicAuth),
+		}
+		client := magicmarkets.NewWithCredential(cfg.APIURL, cred, cfg.Timeout, clientOpts...)
 		return New(client, &cfg, s.opts).newMCP()
 	}, streamableHTTPOptions())
 
 	mux := http.NewServeMux()
-	mux.Handle(HTTPPath, requireAPIKeyHeader(streamable))
+	mux.Handle(HTTPPath, requireCallerCredential(s.resourceMetadataURL, streamable))
+	s.mountOAuth(mux)
 	mux.HandleFunc("/health", probeOK)
 	mux.HandleFunc("/live", probeOK)
 	return mux
@@ -117,7 +184,8 @@ func probeOK(w http.ResponseWriter, _ *http.Request) {
 // session affinity. Streamable HTTP sessions live in process memory, so a
 // tools/call that lands on a different replica than initialize looks like
 // "session not found". Every tool is a self-contained API call keyed by
-// X-Api-Key, so we do not need a transport session.
+// the caller's X-Api-Key or Authorization Bearer token, so we do not need a
+// transport session.
 //
 // JSONResponse: return a single application/json body rather than
 // text/event-stream for tool results.
@@ -128,16 +196,36 @@ func streamableHTTPOptions() *mcp.StreamableHTTPOptions {
 	}
 }
 
-// requireAPIKeyHeader rejects requests with no X-Api-Key. The key is the
-// caller's Magic Markets credential, not a server-side secret.
-func requireAPIKeyHeader(next http.Handler) http.Handler {
+// requireCallerCredential rejects requests with neither X-Api-Key nor
+// Authorization: Bearer. The value is the caller's Magic Markets credential,
+// not a server-side secret.
+func requireCallerCredential(resourceMetadata func(*http.Request) string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.TrimSpace(r.Header.Get(magicmarkets.APIKeyHeader)) == "" {
-			http.Error(w, "missing "+magicmarkets.APIKeyHeader, http.StatusUnauthorized)
+		if _, ok := magicmarkets.CredentialFromHeaders(r.Header); !ok {
+			if url := resourceMetadata(r); url != "" {
+				w.Header().Set("WWW-Authenticate",
+					fmt.Sprintf(`Bearer realm="MagicMarkets", resource_metadata=%q`, url))
+			}
+			http.Error(w, "missing "+magicmarkets.APIKeyHeader+" or Authorization: Bearer", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) resourceMetadataURL(r *http.Request) string {
+	return strings.TrimRight(s.publicBase(r), "/") + protectedResourceMCPPath
+}
+
+func (s *Server) publicBase(r *http.Request) string {
+	if base := strings.TrimRight(s.opts.PublicURL, "/"); base != "" {
+		return base
+	}
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
 }
 
 // ToolNames returns the tools this server would expose, sorted.
@@ -710,7 +798,7 @@ func listRegisteredTools(m *mcp.Server) ([]*mcp.Tool, error) {
 
 // dial opens a stream connection for the discovery tools.
 func (s *Server) dial(ctx context.Context) (*magicmarkets.Stream, error) {
-	return magicmarkets.Dial(ctx, s.cfg.WSURL, s.cfg.APIKey, s.cfg.Lang)
+	return s.client.DialStream(ctx, s.cfg.WSURL, s.cfg.Lang)
 }
 
 // parseCSV splits a comma-separated argument, dropping blanks.

@@ -55,6 +55,13 @@ func StakeString(s *Stake) string {
 	return s.String()
 }
 
+// LiveScore is an in-running {home, away} score a betslip or parlay leg is
+// selected against.
+type LiveScore struct {
+	Home int `json:"home"`
+	Away int `json:"away"`
+}
+
 // PriceLevel is one entry of a price list: the stake available at one price.
 type PriceLevel struct {
 	Effective struct {
@@ -76,7 +83,8 @@ type ParlayLeg struct {
 	BetTypeDescription string   `json:"bet_type_description,omitempty"`
 	Price              *float64 `json:"price,omitempty"`
 	// Outcome is won, lost, void, push, or empty while undecided.
-	Outcome string `json:"outcome,omitempty"`
+	Outcome   string     `json:"outcome,omitempty"`
+	LiveScore *LiveScore `json:"live_score,omitempty"`
 }
 
 // EventResult holds a match or race result. Its shape depends on the sport —
@@ -192,6 +200,9 @@ type Betslip struct {
 	BetslipType      string      `json:"betslip_type"`
 	Legs             []ParlayLeg `json:"legs"`
 	UserData         *string     `json:"user_data"`
+	// LiveScore is the in-running score the betslip was opened at, or nil for
+	// pre-match selections.
+	LiveScore *LiveScore `json:"live_score,omitempty"`
 
 	// PriceList is sorted best price first. Empty until quotes arrive, or
 	// when no source is currently quoting. Absent on the create response.
@@ -323,8 +334,10 @@ type Order struct {
 	// CloseReason is e.g. filled, expired, cancelled.
 	CloseReason *string    `json:"close_reason"`
 	EventInfo   *EventInfo `json:"event_info"`
-	Bets        []Bet      `json:"bets"`
-	UserData    *string    `json:"user_data"`
+	// CurrentScore is [home, away] when the order was placed in-play.
+	CurrentScore *[]int  `json:"current_score,omitempty"`
+	Bets         []Bet   `json:"bets"`
+	UserData     *string `json:"user_data"`
 	// Status is open, pending, done, or failed.
 	Status       string  `json:"status"`
 	KeepOpenIR   bool    `json:"keep_open_ir"`

@@ -108,8 +108,16 @@ Resolved in this order, first match winning:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MAGICMARKETS_API_KEY` | — | Your API key (required) |
+| `MAGICMARKETS_API_KEY` | — | API key (`X-Api-Key`). Required unless `MAGICMARKETS_ACCESS_TOKEN` is set |
+| `MAGICMARKETS_ACCESS_TOKEN` | — | OAuth Bearer token for CLI/stdio. HTTP MCP still takes the token per request |
+| `MAGICMARKETS_OAUTH_ISSUER` | `https://magicmarkets.com/api/auth` | Upstream AS that `mcp --http` proxies `/authorize` and `/token` to, and that `POST /oauth2/firebase-token` is resolved against for a Bearer credential — see [Authentication](#authentication) |
+| `MAGICMARKETS_SESSION_GROUP_ID` | — | Environment-specific id from Magic Markets, used to build the `session` value an OAuth Bearer credential resolves to. No safe default — required wherever a Bearer credential is expected |
+| `MAGICMARKETS_FIREBASE_WEB_API_KEY` | — | Firebase Web API key for the Magic Markets Firebase project, used to exchange the Firebase custom token from `/oauth2/firebase-token` for a real Firebase ID token — see [Authentication](#authentication). No safe default — required wherever a Bearer credential is expected |
+| `MAGICMARKETS_OAUTH_CLIENT_ID` | — | Pre-registered client allowlisting *this host's own* `/mcp/callback` |
+| `MAGICMARKETS_OAUTH_PROXY_SECRET` | — | Seals OAuth proxy state; every replica must share it |
+| `MAGICMARKETS_MCP_PUBLIC_URL` | — | Public base of `mcp --http` (this host is the MCP Authorization Server) |
 | `MAGICMARKETS_API_URL` | `https://magicmarkets.com/v2` | REST base, including `/v2` |
+| `MAGICMARKETS_BASIC_AUTH` | — | Base64 `user:pass` sent as an additional `Authorization: Basic` header on every `/v2/*` REST call — the token for an infra-level wall some non-production environments put in front of the v2 API. Production has no such wall, so this is unset there. Never sent to `/oauth2/firebase-token`, Firebase's `signInWithCustomToken`, or the WebSocket stream |
 | `MAGICMARKETS_WS_URL` | derived from `MAGICMARKETS_API_URL` | Stream endpoint |
 | `MAGICMARKETS_LANG` | `en` | Event name language: `en`, `ko`, `zh-hans` |
 | `MAGICMARKETS_TIMEOUT` | `30s` | Per-request timeout |
@@ -409,7 +417,7 @@ magicmarkets mcp --http --addr 127.0.0.1:8383
 
 `--addr` defaults to `127.0.0.1:8383` — loopback-only, so nothing outside the machine can reach it regardless. `--http` has no TLS of its own — put it behind a reverse proxy if you expose it beyond loopback.
 
-**The server does not use `MAGICMARKETS_API_KEY`.** Each request must send the caller's key in an `X-Api-Key` header; that is the credential used against the Magic Markets API. Stdio still takes the key from the environment.
+**The server does not use `MAGICMARKETS_API_KEY`.** Each request must send the caller's credential as `X-Api-Key` **or** `Authorization: Bearer`. An API key is forwarded to the Magic Markets REST API and `/v2/stream` unchanged. A Bearer token is *not* — it's resolved first, via `POST {MAGICMARKETS_OAUTH_ISSUER}/oauth2/firebase-token`, to the credential those actually require; see [Authentication](#authentication) for the full flow and its known limitations. Stdio still takes `MAGICMARKETS_API_KEY` or `MAGICMARKETS_ACCESS_TOKEN` from the environment.
 
 Point a client at the URL instead of a command:
 
@@ -423,6 +431,25 @@ Point a client at the URL instead of a command:
   }
 }
 ```
+
+The same URL accepts an OAuth access token:
+
+```json
+{
+  "mcpServers": {
+    "magicmarkets": {
+      "url": "http://127.0.0.1:8383/mcp",
+      "headers": { "Authorization": "Bearer your-token" }
+    }
+  }
+}
+```
+
+Remote MCP hosts that speak OAuth can skip the headers map. Unauthenticated `/mcp` replies include `WWW-Authenticate` pointing at protected-resource metadata that names **this MCP host** as the Authorization Server (so Claude's Dynamic Client Registration POSTs `/register` here, not `https://magicmarkets.com/register`). This process runs its own PKCE login against `https://magicmarkets.com/api/auth` — it never forwards a downstream client's redirect_uri upstream, since the real Magic Markets AS only allowlists *this host's own* callback (`{public-url}/mcp/callback`), never Claude's or Cursor's. Set:
+
+- `--public-url https://magicmarkets-mcp.dev-eu.kubershmuber.com` on the hosted deploy
+- `MAGICMARKETS_OAUTH_CLIENT_ID` to a client on `MAGICMARKETS_OAUTH_ISSUER` whose redirect_uris allowlist includes that host's `/mcp/callback`
+- `MAGICMARKETS_OAUTH_PROXY_SECRET` on every replica of a multi-replica deployment — the proxy keeps no server-side session state (login state and one-time codes are sealed, self-contained tokens instead), so replicas that don't share this secret can't decode each other's in-flight logins
 
 ### Enabling trading
 
@@ -647,7 +674,48 @@ Things this codebase relies on. Breaking one should be deliberate.
 
 ## Authentication
 
-This repo targets the **public v2 API**: `https://magicmarkets.com/v2`, authenticated with a single `X-Api-Key` header. That's the only auth method the public API supports today — there is no OAuth yet, and an OAuth-based solution is still in progress. `internal/mcpserver` (the stdio MCP tools) is part of this same repo and authenticates the same way, via the same client; it is not a separate deployment.
+This repo targets the **public v2 API**: `https://magicmarkets.com/v2`. A caller presents one of two credentials — `X-Api-Key`, or `Authorization: Bearer` with a token from `https://magicmarkets.com/api/auth` — but only the API key is what actually goes out on the wire. A Bearer token is not accepted by the v2 API or `/v2/stream` as-is; it must first be resolved, in two hops, to the `magic-metadata-jwt`/`session` pair those endpoints require:
+
+1. `POST {issuer}/oauth2/firebase-token` (`Authorization: Bearer <access token>`) mints a **Firebase custom token** carrying the player's real entitlements.
+2. A Firebase custom token is not itself a valid ID token — Magic Markets' own OAuth integration guide for MCP server implementers is explicit that a custom token must be redeemed for a Firebase **ID token** before it's usable. This process does that redemption itself, calling Google's Identity Toolkit REST API directly — `POST https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=<MAGICMARKETS_FIREBASE_WEB_API_KEY>` — and uses the returned `idToken` as `magic-metadata-jwt`.
+
+`GET {issuer}/me` is *not* used for any of this: it's guarded by Firebase ID-token verification, which the self-signed OAuth access token never satisfies. `internal/magicmarkets.MeResolver` (`internal/magicmarkets/meauth.go`) does both hops and caches the result; both `internal/mcpserver` and the CLI/stdio path go through the same client, so both get it automatically. `magicmarkets mcp --http` advertises OAuth protected-resource metadata so MCP hosts (Claude, Cursor, ...) can obtain a Bearer token in the first place.
+
+**Why `MAGICMARKETS_FIREBASE_WEB_API_KEY` exists:** hop 2 above is a call to *Firebase's* Identity Toolkit API, not to any Magic Markets endpoint, and Firebase requires a **Web API key** — scoped to the Magic Markets Firebase project — to identify which project's custom token is being redeemed. It is not a secret minted per-caller; it's the same project-level key any Firebase web client already embeds client-side. It has no safe default because it's project- and environment-specific (STG and prod are different Firebase projects), so — like `MAGICMARKETS_SESSION_GROUP_ID` — it must be set explicitly wherever an OAuth Bearer caller is expected, or every Bearer-authenticated call fails.
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Resolver as MeResolver (cache)
+    participant Issuer as Magic Markets AS
+    participant Firebase as Firebase Identity Toolkit
+    participant API as v2 API / stream
+
+    Note over Caller,API: An X-Api-Key credential skips all of this, forwarded unchanged.
+
+    Caller->>Resolver: Authorization Bearer access token
+
+    alt cache hit, MeCacheTTL is 1 minute
+        Resolver->>Resolver: reuse cached magic-metadata-jwt and session
+    else cache miss
+        Resolver->>Issuer: POST /oauth2/firebase-token<br/>Authorization Bearer access token
+        Issuer-->>Resolver: firebase_token, a Firebase custom token<br/>not yet valid as magic-metadata-jwt
+        Resolver->>Firebase: POST accounts:signInWithCustomToken<br/>key is MAGICMARKETS_FIREBASE_WEB_API_KEY, token is firebase_token
+        Firebase-->>Resolver: idToken
+        Resolver->>Resolver: cache magic-metadata-jwt as idToken<br/>session as m, group id, uuid joined by dashes<br/>uuid read from the access token's own sub claim
+    end
+
+    Resolver-->>Caller: magic-metadata-jwt, session
+    Caller->>API: REST headers magic-metadata-jwt and session<br/>stream query params jwt and token
+```
+
+### Known limitations
+
+- **This process redeems a Firebase custom token for an ID token itself, instead of that being Magic Markets' problem.** `POST /oauth2/firebase-token` could just as easily call `signInWithCustomToken` server-side and hand back a ready-to-use ID token — sparing every MCP server implementer (not just this one) from needing `MAGICMARKETS_FIREBASE_WEB_API_KEY`, a direct dependency on Google's Identity Toolkit endpoint, and knowledge of the custom-token/ID-token distinction at all. This is a client-side workaround for a gap in the Authorization Server's contract, not the intended end state — revisit once/if `/oauth2/firebase-token` returns an ID token (or the v2 API accepts a custom token directly).
+- **The cache is in-process, not shared.** `MeResolver`'s cache is a per-replica LRU (via `hashicorp/golang-lru`'s expirable variant), not the sealed, replica-independent state `internal/mcpserver/oauth.go` uses for OAuth proxy state. On a hosted, multi-replica deployment, a request routed to a different pod than a prior one just pays for one extra exchange (now two calls: `/oauth2/firebase-token` and `signInWithCustomToken`) on a cache miss — it does not fail, unlike an un-shared `MAGICMARKETS_OAUTH_PROXY_SECRET` would. This is a deliberate workaround, not the end state: a shared cache (or a documented, longer-lived credential from Magic Markets) would remove the per-replica cold-start cost entirely.
+- **The TTL and cache size are fixed consts**, not environment variables (`magicmarkets.MeCacheTTL` = 1 minute; a size of 4096 distinct access tokens) — see `internal/magicmarkets/meauth.go`. This keeps the workaround simple while the `/me` contract itself is still firming up; revisit once it's worth tuning.
+- **`MAGICMARKETS_SESSION_GROUP_ID` and `MAGICMARKETS_FIREBASE_WEB_API_KEY` have no safe default** and differ per environment — both must be set explicitly wherever an OAuth Bearer caller is expected, or every Bearer-authenticated call fails.
+- **No proactive token refresh.** Resolution is retried on every cache miss, but nothing refreshes an access token before it expires — an expired token surfaces as a failed exchange (and thus a failed tool call), the same as any other invalid credential.
 
 ## Making a change
 

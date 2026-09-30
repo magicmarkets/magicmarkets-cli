@@ -77,7 +77,8 @@ Three concepts carry the whole flow:
 ### Step 1 - Check your key
 
 Before opening the socket, prove the key works with a cheap REST call -
-the WebSocket closes silently on a bad key, so verify here first:
+a bad key fails the WebSocket upgrade with HTTP 401, so verify the key
+first:
 
 ```bash
 curl "$MAGIC_API_URL/xrates/" -H "X-Api-Key: $MAGIC_API_KEY"
@@ -804,6 +805,7 @@ All paths also work behind the `/magic-api` ingress prefix
 | Error429 | [#/components/responses/Error429](#componentsresponseserror429) | Rate limit hit. Honour the `Retry-After` header. |
 | Error500 | [#/components/responses/Error500](#componentsresponseserror500) | Unexpected internal error. Quote `data[1]` (the token) when contacting support. |
 | StakeTuple | [#/components/schemas/StakeTuple](#componentsschemasstaketuple) | [currency, amount] - e.g. ["USDT", 115.38] |
+| LiveScore | [#/components/schemas/LiveScore](#componentsschemaslivescore) | In-running score at a point in time, `{home, away}`. |
 | ErrorEnvelope | [#/components/schemas/ErrorEnvelope](#componentsschemaserrorenvelope) | Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses. |
 | PriceLevel | [#/components/schemas/PriceLevel](#componentsschemaspricelevel) |  |
 | BetslipCreateResponse | [#/components/schemas/BetslipCreateResponse](#componentsschemasbetslipcreateresponse) | Create (POST) response; carries no prices. Poll GET or watch the stream for the quote. |
@@ -899,10 +901,14 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
   event_id?: string
   // Bet type string (required for normal/lay) - see "Sports & bet types" in the introduction.
   bet_type?: string
+  // The in-running score you are selecting against, e.g. `{"home": 1, "away": 0}`. Liquidity a source is quoting at a different in-running score is then never treated as equivalent to your selection, so a line that has already moved on a goal cannot be matched against it. The score stays on the betslip and applies again when an order placed on it re-selects liquidity. Omit it (or send null) for pre-match selections and to accept quotes at whatever score a source is on.
+  live_score?: #/components/schemas/LiveScore | null
   legs: {
     sport: string
     event_id: string
     bet_type: string
+    // In-running score this leg is selected against, or null
+    live_score?: #/components/schemas/LiveScore | null
   }[]
   betslip_type?: enum[normal, lay, parlay] //default: normal
   equivalent_bets?: boolean //default: true
@@ -932,6 +938,8 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
     bet_type?: string
     // Human-readable label, e.g. Home, Over 1.5 (Asian)
     bet_type_description?: string
+    // The in-running score the betslip was opened at, as supplied on create; null when none was given (pre-match selections).
+    live_score?: #/components/schemas/LiveScore | null
     // Unix timestamp when the betslip expires
     expiry_ts?: number
     is_open?: boolean
@@ -964,6 +972,7 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
       "event_id": "2026-06-15,3003,4004",
       "bet_type": "for,ahover,7",
       "bet_type_description": "Over 1.5 (Asian)",
+      "live_score": null,
       "expiry_ts": 1781234999,
       "is_open": true,
       "close_reason": null,
@@ -990,6 +999,7 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
       "event_id": "",
       "bet_type": "parlay",
       "bet_type_description": "Karlsruher SC AND Draw AND SV Darmstadt 1898 AND Anastasia Potapova",
+      "live_score": null,
       "expiry_ts": 1775837930.718644,
       "is_open": true,
       "close_reason": null,
@@ -1004,6 +1014,7 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
           "sport": "fb",
           "event_id": "2026-04-10,224,204",
           "bet_type": "for,h",
+          "live_score": null,
           "bet_type_description": "Karlsruher SC",
           "price": null,
           "outcome": null
@@ -1013,6 +1024,7 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
           "sport": "fb",
           "event_id": "2026-04-11,1027,211",
           "bet_type": "for,d",
+          "live_score": null,
           "bet_type_description": "Draw",
           "price": null,
           "outcome": null
@@ -1022,6 +1034,7 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
           "sport": "fb",
           "event_id": "2026-04-11,1080,205",
           "bet_type": "for,h",
+          "live_score": null,
           "bet_type_description": "SV Darmstadt 1898",
           "price": null,
           "outcome": null
@@ -1031,6 +1044,7 @@ The response carries **no prices**: quotes are gathered asynchronously. Poll `GE
           "sport": "tennis",
           "event_id": "2026-04-10,80623,10056707",
           "bet_type": "for,tset,all,vset1,p1",
+          "live_score": null,
           "bet_type_description": "Anastasia Potapova",
           "price": null,
           "outcome": null
@@ -1164,6 +1178,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
       "event_id": "2026-06-15,3003,4004",
       "bet_type": "for,ahover,7",
       "bet_type_description": "Over 1.5 (Asian)",
+      "live_score": null,
       "expiry_ts": 1781234999,
       "is_open": true,
       "close_reason": null,
@@ -1232,6 +1247,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
       "event_id": "2026-06-15,1001,2002",
       "bet_type": "for,h",
       "bet_type_description": "Home",
+      "live_score": null,
       "expiry_ts": 1781234567,
       "is_open": true,
       "close_reason": null,
@@ -1277,6 +1293,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
       "event_id": "2026-03-17,22,328",
       "bet_type": "against,h",
       "bet_type_description": "Home",
+      "live_score": null,
       "expiry_ts": 1789700000,
       "is_open": true,
       "close_reason": null,
@@ -1348,6 +1365,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
       "event_id": "",
       "bet_type": "parlay",
       "bet_type_description": "Karlsruher SC AND Draw AND SV Darmstadt 1898 AND Anastasia Potapova",
+      "live_score": null,
       "expiry_ts": 1775837930.718644,
       "is_open": true,
       "close_reason": null,
@@ -1363,6 +1381,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
           "sport": "fb",
           "event_id": "2026-04-10,224,204",
           "bet_type": "for,h",
+          "live_score": null,
           "bet_type_description": "Karlsruher SC",
           "price": null,
           "outcome": null
@@ -1372,6 +1391,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
           "sport": "fb",
           "event_id": "2026-04-11,1027,211",
           "bet_type": "for,d",
+          "live_score": null,
           "bet_type_description": "Draw",
           "price": null,
           "outcome": null
@@ -1381,6 +1401,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
           "sport": "fb",
           "event_id": "2026-04-11,1080,205",
           "bet_type": "for,h",
+          "live_score": null,
           "bet_type_description": "SV Darmstadt 1898",
           "price": null,
           "outcome": null
@@ -1390,6 +1411,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
           "sport": "tennis",
           "event_id": "2026-04-10,80623,10056707",
           "bet_type": "for,tset,all,vset1,p1",
+          "live_score": null,
           "bet_type_description": "Anastasia Potapova",
           "price": null,
           "outcome": null
@@ -1413,6 +1435,7 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
       "event_id": "2026-08-10,9009,1010",
       "bet_type": "for,a",
       "bet_type_description": "Away",
+      "live_score": null,
       "expiry_ts": 1783000000,
       "is_open": true,
       "close_reason": null,
@@ -1589,6 +1612,8 @@ search?: string
     stake?: #/components/schemas/StakeTuple | null
     profit_loss?: #/components/schemas/StakeTuple | null
     bet_bar_values?: object | null
+    // The in-running score the exchange held for the event when the order was placed, `[home, away]`; null for pre-match orders and for events without a running score.
+    current_score?: integer[] | null
     legs?: #/components/schemas/ParlayLegList | null
   }[]
 }
@@ -1717,6 +1742,8 @@ Places a new order on an existing betslip.
     stake?: #/components/schemas/StakeTuple | null
     profit_loss?: #/components/schemas/StakeTuple | null
     bet_bar_values?: object | null
+    // The in-running score the exchange held for the event when the order was placed, `[home, away]`; null for pre-match orders and for events without a running score.
+    current_score?: integer[] | null
     legs?: #/components/schemas/ParlayLegList | null
   }
 }
@@ -1844,6 +1871,8 @@ updated_at_to: string
     stake?: #/components/schemas/StakeTuple | null
     profit_loss?: #/components/schemas/StakeTuple | null
     bet_bar_values?: object | null
+    // The in-running score the exchange held for the event when the order was placed, `[home, away]`; null for pre-match orders and for events without a running score.
+    current_score?: integer[] | null
     legs?: #/components/schemas/ParlayLegList | null
   }[]
 }
@@ -1991,6 +2020,8 @@ Returns a single order by ID with all stakes in USDT.
     stake?: #/components/schemas/StakeTuple | null
     profit_loss?: #/components/schemas/StakeTuple | null
     bet_bar_values?: object | null
+    // The in-running score the exchange held for the event when the order was placed, `[home, away]`; null for pre-match orders and for events without a running score.
+    current_score?: integer[] | null
     legs?: #/components/schemas/ParlayLegList | null
   }
 }
@@ -2095,6 +2126,8 @@ Retrieve an order using the `request_uuid` from order creation instead of the or
     stake?: #/components/schemas/StakeTuple | null
     profit_loss?: #/components/schemas/StakeTuple | null
     bet_bar_values?: object | null
+    // The in-running score the exchange held for the event when the order was placed, `[home, away]`; null for pre-match orders and for events without a running score.
+    current_score?: integer[] | null
     legs?: #/components/schemas/ParlayLegList | null
   }
 }
@@ -3091,19 +3124,28 @@ feed has no prices for succeeds with an empty snapshot, and
 other code string as **opaque** - log it and retry after a short  
 backoff.  
   
-**Authentication** is enforced at the HTTP handshake: a missing *or*  
-invalid `api_key` makes the WebSocket upgrade fail with a non-101 HTTP  
-response, which clients see as a handshake error (for example the  
-`websockets` library raises `InvalidStatus`). An invalid key takes  
-slightly longer to reject than a missing one, since it is checked  
-server-side. Verify the key against a REST endpoint before opening the  
-socket.  
+**Authentication and admission are enforced at the HTTP handshake.**  
+A refused upgrade returns a non-101 status with a short `text/plain`  
+body naming the reason. Clients see a handshake error.  
   
-Three classes of failure drop an *established* connection silently  
+| Status | Body | What to do |  
+|--------|------|------------|  
+| 400 | `missing_credentials`, `invalid_lang` | `api_key` is missing, or `lang` is not an allowed value. Fix the request. |  
+| 401 | `auth_rejected` | The key was not accepted. Do not retry with the same key; check it against a REST endpoint. |  
+| 503 | `unavailable` | The server cannot accept connections right now. Retry with backoff. |  
+  
+Treat all other 4xx as 401 and all other 5xx as 503. The `websockets`  
+library raises `InvalidStatus` with the body on `exc.response.body`.  
+  
+**Backpressure** - if you read too slowly, the server's outbound  
+buffer overflows and the server closes with code **1008**. Read  
+faster or register fewer events. An immediate reconnect overflows  
+again. A client that stopped reading never receives the frame and  
+sees only the raw TCP close.  
+  
+Two classes of failure drop an *established* connection silently  
 (raw TCP close, no WebSocket close frame, no in-band error):  
   
-- **Backpressure** - the client is reading too slowly and the  
-  server's outbound buffer overflows. Reconnect and resume.  
 - **I/O error** - any read or write failure on the socket.  
 - **Internal error** - a rare server-side failure; not  
   client-triggerable and observably identical to an I/O error.  
@@ -3123,6 +3165,12 @@ lang?: enum[en, ko, zh-hans] //default: en
 #### Responses
 
 - 101 Switching protocols - WebSocket connection established
+
+- 400 Refused at the handshake - `api_key` missing or `lang` invalid.
+
+- 401 Refused at the handshake - the key was not accepted.
+
+- 503 Refused at the handshake - the server cannot accept connections right now; retry with backoff.
 
 - default Failures are delivered in-band as `["response", {"status": "error", "code": ...}]` entries inside the `{"ts": ..., "data": [...]}` envelope on the open WebSocket, or by silent TCP close - see the **Errors** section above.
 
@@ -3223,6 +3271,18 @@ lang?: enum[en, ko, zh-hans] //default: en
 string | number[]
 ```
 
+### #/components/schemas/LiveScore
+
+```typescript
+// In-running score at a point in time, `{home, away}`.
+{
+  // Home-team score
+  home: integer
+  // Away-team score
+  away: integer
+}
+```
+
 ### #/components/schemas/ErrorEnvelope
 
 ```typescript
@@ -3263,6 +3323,8 @@ string | number[]
   bet_type?: string
   // Human-readable label, e.g. Home, Over 1.5 (Asian)
   bet_type_description?: string
+  // The in-running score the betslip was opened at, as supplied on create; null when none was given (pre-match selections).
+  live_score?: #/components/schemas/LiveScore | null
   // Unix timestamp when the betslip expires
   expiry_ts?: number
   is_open?: boolean
@@ -3314,6 +3376,8 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
     bet_type?: string
     // Human-readable label, e.g. Home, Over 1.5 (Asian)
     bet_type_description?: string
+    // The in-running score the betslip was opened at, as supplied on create; null when none was given (pre-match selections).
+    live_score?: #/components/schemas/LiveScore | null
     // Unix timestamp when the betslip expires
     expiry_ts?: number
     is_open?: boolean
@@ -3372,10 +3436,14 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
   event_id?: string
   // Bet type string (required for normal/lay) - see "Sports & bet types" in the introduction.
   bet_type?: string
+  // The in-running score you are selecting against, e.g. `{"home": 1, "away": 0}`. Liquidity a source is quoting at a different in-running score is then never treated as equivalent to your selection, so a line that has already moved on a goal cannot be matched against it. The score stays on the betslip and applies again when an order placed on it re-selects liquidity. Omit it (or send null) for pre-match selections and to accept quotes at whatever score a source is on.
+  live_score?: #/components/schemas/LiveScore | null
   legs: {
     sport: string
     event_id: string
     bet_type: string
+    // In-running score this leg is selected against, or null
+    live_score?: #/components/schemas/LiveScore | null
   }[]
   betslip_type?: enum[normal, lay, parlay] //default: normal
   equivalent_bets?: boolean //default: true
@@ -3515,6 +3583,8 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
   event_id?: string
   // Bet type string - see "Sports & bet types" in the introduction.
   bet_type?: string
+  // In-running score this leg was selected against, or null
+  live_score?: #/components/schemas/LiveScore | null
   bet_type_description?: string
   price?: number | null
   // Leg settlement: `w` won, `l` lost, `v` void, `v/w` win-void, `l/v` void-loss, `l/w` loss-win (half outcomes), `unknown`, or null before settlement.
@@ -3532,6 +3602,8 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
   event_id?: string
   // Bet type string - see "Sports & bet types" in the introduction.
   bet_type?: string
+  // In-running score this leg was selected against, or null
+  live_score?: #/components/schemas/LiveScore | null
   bet_type_description?: string
   price?: number | null
   // Leg settlement: `w` won, `l` lost, `v` void, `v/w` win-void, `l/v` void-loss, `l/w` loss-win (half outcomes), `unknown`, or null before settlement.
@@ -3634,6 +3706,8 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
   stake?: #/components/schemas/StakeTuple | null
   profit_loss?: #/components/schemas/StakeTuple | null
   bet_bar_values?: object | null
+  // The in-running score the exchange held for the event when the order was placed, `[home, away]`; null for pre-match orders and for events without a running score.
+  current_score?: integer[] | null
   legs?: #/components/schemas/ParlayLegList | null
 }
 ```
@@ -3702,6 +3776,8 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
     stake?: #/components/schemas/StakeTuple | null
     profit_loss?: #/components/schemas/StakeTuple | null
     bet_bar_values?: object | null
+    // The in-running score the exchange held for the event when the order was placed, `[home, away]`; null for pre-match orders and for events without a running score.
+    current_score?: integer[] | null
     legs?: #/components/schemas/ParlayLegList | null
   }
 }
@@ -3771,6 +3847,8 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
     stake?: #/components/schemas/StakeTuple | null
     profit_loss?: #/components/schemas/StakeTuple | null
     bet_bar_values?: object | null
+    // The in-running score the exchange held for the event when the order was placed, `[home, away]`; null for pre-match orders and for events without a running score.
+    current_score?: integer[] | null
     legs?: #/components/schemas/ParlayLegList | null
   }[]
 }

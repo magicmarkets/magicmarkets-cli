@@ -30,6 +30,13 @@ func derefStr(s *string) string {
 	return *s
 }
 
+func derefInts(v *[]int) []int {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
 func rfc3339(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -57,6 +64,14 @@ func bestPriceFromAPI(levels []magicmarkets.PriceLevel) *float64 {
 	return &p
 }
 
+func liveScoreFromAPI(s *magicmarkets.LiveScore) *liveScore {
+	if s == nil {
+		return nil
+	}
+	v := liveScore{Home: s.Home, Away: s.Away}
+	return &v
+}
+
 func parlayLegsFromAPI(legs []magicmarkets.ParlayLeg) []parlayLeg {
 	if len(legs) == 0 {
 		return nil
@@ -71,6 +86,7 @@ func parlayLegsFromAPI(legs []magicmarkets.ParlayLeg) []parlayLeg {
 			BetTypeDescription: l.BetTypeDescription,
 			Price:              l.Price,
 			Outcome:            l.Outcome,
+			LiveScore:          liveScoreFromAPI(l.LiveScore),
 		})
 	}
 	return out
@@ -165,6 +181,7 @@ func orderFromAPI(o *magicmarkets.Order) order {
 		Stake:              ptrStake(o.Stake),
 		ProfitLoss:         ptrStake(o.ProfitLoss),
 		Legs:               parlayLegsFromAPI(o.Legs),
+		CurrentScore:       derefInts(o.CurrentScore),
 	}
 }
 
@@ -232,6 +249,7 @@ func betslipFromAPI(bs *magicmarkets.Betslip) betslip {
 		BestPrice:          bestPriceFromAPI(bs.PriceList),
 		TotalAvailable:     ptrStake(bs.Total),
 		Legs:               parlayLegsFromAPI(bs.Legs),
+		LiveScore:          liveScoreFromAPI(bs.LiveScore),
 	}
 	if bs.CloseReason != nil {
 		out.CloseReason = *bs.CloseReason

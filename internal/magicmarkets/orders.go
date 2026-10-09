@@ -38,8 +38,8 @@ const (
 type CreateOrderRequest struct {
 	BetslipID string `json:"betslip_id"`
 
-	// Price is the desired decimal price. Off-tick prices are snapped up to
-	// the next tick; see SnapPrice.
+	// Price is the desired decimal price. Off-tick prices are snapped up on a
+	// normal betslip and down on a lay betslip; see SnapPrice.
 	Price float64 `json:"price"`
 
 	Stake Stake `json:"stake"`

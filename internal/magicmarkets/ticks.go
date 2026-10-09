@@ -62,17 +62,22 @@ func bandFor(price float64) tickBand {
 	return tickSchedule[len(tickSchedule)-1]
 }
 
-// SnapPrice rounds an off-tick price UP to the next tick on the schedule.
+// SnapPrice rounds an off-tick price onto the tick schedule the way the server
+// does, so the CLI shows and sends the price the order will actually run with.
 //
-// A back ("for") limit is honoured only at that price or better, so the server
-// moves an off-tick back limit up to the first tick that satisfies it: a back
-// limit of 7.15 becomes 7.20 and is never filled at 7.10. SnapPrice mirrors
-// that, so the CLI shows and sends the price the order will actually run with.
+// The direction depends on the betslip type, not on the bet type
+// (measured on production 2026-10-09):
 //
-// Lay ("against") prices are also rounded up. The server's rule for an
-// off-tick lay limit is not confirmed, so dir is kept for when it is; until
-// then callers should send lay prices that are already on the schedule. A
-// price already on the schedule is returned unchanged.
+//   - Back: a normal betslip, whether its bet_type starts with "for" or
+//     "against". The price is odds on that selection, higher is better, and an
+//     off-tick limit moves UP (7.15 becomes 7.20, 1.985 on an against bet
+//     type becomes 1.99).
+//   - Lay: a lay betslip (betslip_type "lay"). The price is a lay price, lower
+//     is better, and an off-tick limit moves DOWN (2.31 becomes 2.30).
+//
+// Either way the snapped limit is never worse than the one requested. Use
+// SnapDirection to pick dir from a betslip. A price already on the schedule is
+// returned unchanged.
 func SnapPrice(price float64, dir Direction) float64 {
 	if price <= MinPrice {
 		return MinPrice
@@ -88,10 +93,11 @@ func SnapPrice(price float64, dir Direction) float64 {
 	// so 2.50 is never nudged to 2.48 by binary representation error.
 	if nearest := math.Round(steps); math.Abs(steps-nearest) < 1e-9 {
 		steps = nearest
+	} else if dir == Lay {
+		steps = math.Floor(steps)
 	} else {
 		steps = math.Ceil(steps)
 	}
-	_ = dir // both directions round up today; see the doc comment
 
 	snapped := roundTo(b.lo+steps*b.tick, decimalsFor(b.tick))
 
@@ -144,7 +150,17 @@ func ImpliedCents(price float64) float64 {
 	return 100 / price
 }
 
-// DirectionOf reads the direction from a bet_type string. Bet types always
+// SnapDirection returns the rounding direction for an order on a betslip of
+// the given betslip_type: Lay for a lay betslip, Back for everything else.
+func SnapDirection(betslipType string) Direction {
+	if betslipType == BetslipLay {
+		return Lay
+	}
+	return Back
+}
+
+// DirectionOf reads the direction from a bet_type string. It describes the
+// selection only; use SnapDirection for price rounding. Bet types always
 // begin with "for" or "against".
 func DirectionOf(betType string) Direction {
 	if strings.HasPrefix(betType, string(Lay)+",") || betType == string(Lay) {

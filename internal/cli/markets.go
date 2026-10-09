@@ -308,8 +308,9 @@ func (a *App) newTicksCmd() *cobra.Command {
 		Long: `Snap a decimal price onto the API's tick schedule.
 
 All prices lie on a fixed schedule whose tick widens as the price grows. An
-off-tick order price is rounded to the nearest valid tick that does not tighten
-your limit: down for back (for) orders, up for lay (against) orders.
+off-tick back (for) limit moves up to the next tick, as the server does: 7.15
+becomes 7.20. Lay (against) prices are also rounded up; send lay prices that are
+already on the schedule.
 
 Use this to see the price an order will actually run with before placing it.
 

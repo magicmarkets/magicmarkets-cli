@@ -49,23 +49,25 @@ func TestSnapPriceAlreadyOnTick(t *testing.T) {
 }
 
 func TestSnapPriceDirection(t *testing.T) {
-	// A back order must never be snapped up (that would take a worse price)
-	// and a lay order must never be snapped down.
+	// An off-tick price moves up to the next tick. For a back order that is
+	// what the server does (7.15 becomes 7.20), so a back limit is never
+	// loosened to a worse price. Lay prices are rounded up too.
 	cases := []struct {
 		price    float64
 		wantBack float64
 		wantLay  float64
 	}{
-		{1.234, 1.23, 1.24},   // 0.01 tick
-		{2.345, 2.34, 2.36},   // 0.02 tick
-		{3.33, 3.30, 3.35},    // 0.05 tick
-		{4.55, 4.50, 4.60},    // 0.10 tick
-		{6.55, 6.40, 6.60},    // 0.20 tick
-		{10.7, 10.5, 11.0},    // 0.50 tick
-		{20.5, 20.0, 21.0},    // 1 tick
-		{31.5, 30.0, 32.0},    // 2 tick
-		{52.5, 50.0, 55.0},    // 5 tick
-		{105.0, 100.0, 110.0}, // 10 tick
+		{1.234, 1.24, 1.24},   // 0.01 tick
+		{2.345, 2.36, 2.36},   // 0.02 tick
+		{3.33, 3.35, 3.35},    // 0.05 tick
+		{4.55, 4.60, 4.60},    // 0.10 tick
+		{6.55, 6.60, 6.60},    // 0.20 tick
+		{7.15, 7.20, 7.20},    // the documented example
+		{10.7, 11.0, 11.0},    // 0.50 tick
+		{20.5, 21.0, 21.0},    // 1 tick
+		{31.5, 32.0, 32.0},    // 2 tick
+		{52.5, 55.0, 55.0},    // 5 tick
+		{105.0, 110.0, 110.0}, // 10 tick
 	}
 	for _, c := range cases {
 		if got := SnapPrice(c.price, Back); math.Abs(got-c.wantBack) > 1e-9 {
@@ -78,13 +80,16 @@ func TestSnapPriceDirection(t *testing.T) {
 }
 
 func TestSnapPriceCrossesBandUpward(t *testing.T) {
-	// Rounding a lay price up out of a band lands on the next band's lower
-	// bound, which is itself a valid price.
+	// Rounding up out of a band lands on the next band's lower bound, which
+	// is itself a valid price.
 	if got := SnapPrice(1.995, Lay); math.Abs(got-2.0) > 1e-9 {
 		t.Errorf("SnapPrice(1.995, lay) = %g, want 2", got)
 	}
 	if got := SnapPrice(2.99, Lay); math.Abs(got-3.0) > 1e-9 {
 		t.Errorf("SnapPrice(2.99, lay) = %g, want 3", got)
+	}
+	if got := SnapPrice(1.995, Back); math.Abs(got-2.0) > 1e-9 {
+		t.Errorf("SnapPrice(1.995, back) = %g, want 2", got)
 	}
 }
 
@@ -97,15 +102,18 @@ func TestSnapPriceClamps(t *testing.T) {
 	}
 }
 
-func TestSnapPriceNeverTightensLimit(t *testing.T) {
-	// Property check: a snapped back price is never above the requested price,
-	// and a snapped lay price is never below it.
+func TestSnapPriceNeverBelowRequest(t *testing.T) {
+	// Property check: a snapped price is never below the requested price, so
+	// a back limit is never loosened to a worse price.
 	for p := 1.01; p <= 999; p += 0.013 {
-		if back := SnapPrice(p, Back); back > p+1e-9 {
-			t.Fatalf("SnapPrice(%g, back) = %g, which is above the request", p, back)
+		if back := SnapPrice(p, Back); back < p-1e-9 {
+			t.Fatalf("SnapPrice(%g, back) = %g, which is below the request", p, back)
 		}
 		if lay := SnapPrice(p, Lay); lay < p-1e-9 {
 			t.Fatalf("SnapPrice(%g, lay) = %g, which is below the request", p, lay)
+		}
+		if back := SnapPrice(p, Back); !IsOnTick(back) {
+			t.Fatalf("SnapPrice(%g, back) = %g, which is off the schedule", p, back)
 		}
 	}
 }

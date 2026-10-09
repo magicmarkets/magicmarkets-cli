@@ -301,11 +301,11 @@ Every price lies on a fixed tick schedule whose step widens as the price grows:
 | 50 – 100 | 5 |
 | 100 – 1000 | 10 |
 
-An off-tick order price is rounded so it never tightens your limit: **down** for back (`for`) orders, **up** for lay (`against`) orders. `magicmarkets order place` snaps the price itself and shows the result in the confirmation.
+An off-tick back (`for`) limit moves **up** to the next tick, as the server does: a back limit of 7.15 becomes 7.20 and is never filled at 7.10. `magicmarkets order place` snaps the price itself and shows the result in the confirmation. Lay (`against`) prices are also rounded up; send lay prices that are already on the schedule.
 
 ```bash
 $ magicmarkets ticks 2.345
-snapped price    2.34        # back: rounded down
+snapped price    2.36        # back: rounded up
 $ magicmarkets ticks 2.345 --lay
 snapped price    2.36        # lay: rounded up
 ```
@@ -666,7 +666,7 @@ Things this codebase relies on. Breaking one should be deliberate.
 
 **New MCP tools that spend money go behind `AllowTrading`** and carry a destructive hint. The gate is tested; do not weaken it.
 
-**Money-touching code needs a test.** `ticks.go` and the MCP trading gate both have tests asserting safety properties — a snap never tightens the bettor's limit, and trading tools are unreachable without `MAGICMARKETS_ALLOW_TRADING`. Extend those rather than working around them.
+**Money-touching code needs a test.** `ticks.go` and the MCP trading gate both have tests asserting safety properties — a snapped back price is never below the requested price, and trading tools are unreachable without `MAGICMARKETS_ALLOW_TRADING`. Extend those rather than working around them.
 
 **Every command supports `--json`** and renders a table otherwise. Data goes to stdout; warnings and prompts go to stderr, so piping stays clean.
 

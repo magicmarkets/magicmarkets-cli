@@ -210,7 +210,7 @@ type validateBetTypeInput struct {
 type snapPriceInput struct {
 	Price     float64 `json:"price" jsonschema:"Decimal price, between 1.01 and 1000."`
 	BetType   string  `json:"bet_type,omitempty" jsonschema:"Bet type string; its direction decides the rounding."`
-	Direction string  `json:"direction,omitempty" jsonschema:"'for' (back, rounds down) or 'against' (lay, rounds up). Defaults to 'for'. Ignored when bet_type is given."`
+	Direction string  `json:"direction,omitempty" jsonschema:"'for' (back) or 'against' (lay). Both round up to the next tick. Defaults to 'for'. Ignored when bet_type is given."`
 }
 
 type listEventsInput struct {

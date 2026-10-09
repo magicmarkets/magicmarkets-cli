@@ -285,8 +285,9 @@ func (s *Server) register(m *mcp.Server) {
 	addTool(m, "snap_price",
 		"Snap a decimal price onto the API's tick schedule and report the tick size and "+
 			"implied probability. Runs locally with no API call. "+
-			"Off-tick order prices are rounded so they never tighten your limit: down for back ('for') orders, "+
-			"up for lay ('against') orders. Use this to know the price an order will actually run with.",
+			"An off-tick back ('for') limit moves up to the next tick, as the server does: 7.15 becomes 7.20. "+
+			"Lay ('against') prices are also rounded up; send lay prices on the schedule. "+
+			"Use this to know the price an order will actually run with.",
 		hints(true, false, true, false), s.snapPrice)
 
 	// Read-only: discovery over the stream.

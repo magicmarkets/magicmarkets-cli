@@ -157,5 +157,5 @@ cannot drift from what `Serve` exposes. Do not replace it with a hardcoded list.
 
 The tick schedule (`internal/magicmarkets/ticks.go`) and the MCP trading gate
 (`internal/mcpserver`) both have tests asserting safety properties: a snapped
-price never tightens the bettor's limit, and trading tools are unreachable
+back price is never below the requested price, and trading tools are unreachable
 without `MAGICMARKETS_ALLOW_TRADING`. Extend those tests rather than weakening them.

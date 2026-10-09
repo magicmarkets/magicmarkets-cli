@@ -62,12 +62,16 @@ func bandFor(price float64) tickBand {
 	return tickSchedule[len(tickSchedule)-1]
 }
 
-// SnapPrice rounds price onto the tick schedule in the direction that does not
-// tighten the bettor's limit: down for back ("for") orders, up for lay
-// ("against") orders.
+// SnapPrice rounds an off-tick price UP to the next tick on the schedule.
 //
-// This mirrors what the server does to an off-tick order price, so the CLI can
-// show the price the order will actually run with before it is submitted. A
+// A back ("for") limit is honoured only at that price or better, so the server
+// moves an off-tick back limit up to the first tick that satisfies it: a back
+// limit of 7.15 becomes 7.20 and is never filled at 7.10. SnapPrice mirrors
+// that, so the CLI shows and sends the price the order will actually run with.
+//
+// Lay ("against") prices are also rounded up. The server's rule for an
+// off-tick lay limit is not confirmed, so dir is kept for when it is; until
+// then callers should send lay prices that are already on the schedule. A
 // price already on the schedule is returned unchanged.
 func SnapPrice(price float64, dir Direction) float64 {
 	if price <= MinPrice {
@@ -84,11 +88,10 @@ func SnapPrice(price float64, dir Direction) float64 {
 	// so 2.50 is never nudged to 2.48 by binary representation error.
 	if nearest := math.Round(steps); math.Abs(steps-nearest) < 1e-9 {
 		steps = nearest
-	} else if dir == Lay {
-		steps = math.Ceil(steps)
 	} else {
-		steps = math.Floor(steps)
+		steps = math.Ceil(steps)
 	}
+	_ = dir // both directions round up today; see the doc comment
 
 	snapped := roundTo(b.lo+steps*b.tick, decimalsFor(b.tick))
 

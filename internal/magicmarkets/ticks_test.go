@@ -49,23 +49,28 @@ func TestSnapPriceAlreadyOnTick(t *testing.T) {
 }
 
 func TestSnapPriceDirection(t *testing.T) {
-	// A back order must never be snapped up (that would take a worse price)
-	// and a lay order must never be snapped down.
+	// Measured on production 2026-10-09: on a normal betslip an off-tick
+	// limit moves up (7.15 to 7.20, and 1.985 to 1.99 on an against bet type);
+	// on a lay betslip it moves down (2.31 to 2.30, 2.01 to 2.00).
 	cases := []struct {
 		price    float64
 		wantBack float64
 		wantLay  float64
 	}{
-		{1.234, 1.23, 1.24},   // 0.01 tick
-		{2.345, 2.34, 2.36},   // 0.02 tick
-		{3.33, 3.30, 3.35},    // 0.05 tick
-		{4.55, 4.50, 4.60},    // 0.10 tick
-		{6.55, 6.40, 6.60},    // 0.20 tick
-		{10.7, 10.5, 11.0},    // 0.50 tick
-		{20.5, 20.0, 21.0},    // 1 tick
-		{31.5, 30.0, 32.0},    // 2 tick
-		{52.5, 50.0, 55.0},    // 5 tick
-		{105.0, 100.0, 110.0}, // 10 tick
+		{1.234, 1.24, 1.23},   // 0.01 tick
+		{1.985, 1.99, 1.98},   // measured: normal against,h ran at 1.99
+		{2.01, 2.02, 2.00},    // measured: lay against,h ran at 2.00
+		{2.31, 2.32, 2.30},    // measured: lay for,h ran at 2.30
+		{2.345, 2.36, 2.34},   // 0.02 tick
+		{3.33, 3.35, 3.30},    // 0.05 tick
+		{4.55, 4.60, 4.50},    // 0.10 tick
+		{6.55, 6.60, 6.40},    // 0.20 tick
+		{7.15, 7.20, 7.00},    // the documented back example
+		{10.7, 11.0, 10.5},    // 0.50 tick
+		{20.5, 21.0, 20.0},    // 1 tick
+		{31.5, 32.0, 30.0},    // 2 tick
+		{52.5, 55.0, 50.0},    // 5 tick
+		{105.0, 110.0, 100.0}, // 10 tick
 	}
 	for _, c := range cases {
 		if got := SnapPrice(c.price, Back); math.Abs(got-c.wantBack) > 1e-9 {
@@ -78,13 +83,27 @@ func TestSnapPriceDirection(t *testing.T) {
 }
 
 func TestSnapPriceCrossesBandUpward(t *testing.T) {
-	// Rounding a lay price up out of a band lands on the next band's lower
-	// bound, which is itself a valid price.
-	if got := SnapPrice(1.995, Lay); math.Abs(got-2.0) > 1e-9 {
-		t.Errorf("SnapPrice(1.995, lay) = %g, want 2", got)
+	// Rounding up out of a band lands on the next band's lower bound, which
+	// is itself a valid price.
+	if got := SnapPrice(1.995, Back); math.Abs(got-2.0) > 1e-9 {
+		t.Errorf("SnapPrice(1.995, back) = %g, want 2", got)
 	}
-	if got := SnapPrice(2.99, Lay); math.Abs(got-3.0) > 1e-9 {
-		t.Errorf("SnapPrice(2.99, lay) = %g, want 3", got)
+	if got := SnapPrice(2.99, Back); math.Abs(got-3.0) > 1e-9 {
+		t.Errorf("SnapPrice(2.99, back) = %g, want 3", got)
+	}
+	if got := SnapPrice(1.995, Lay); math.Abs(got-1.99) > 1e-9 {
+		t.Errorf("SnapPrice(1.995, lay) = %g, want 1.99", got)
+	}
+}
+
+func TestSnapDirection(t *testing.T) {
+	if SnapDirection("lay") != Lay {
+		t.Error(`SnapDirection("lay") should be Lay`)
+	}
+	for _, bt := range []string{"normal", "parlay", ""} {
+		if SnapDirection(bt) != Back {
+			t.Errorf("SnapDirection(%q) should be Back", bt)
+		}
 	}
 }
 
@@ -97,15 +116,17 @@ func TestSnapPriceClamps(t *testing.T) {
 	}
 }
 
-func TestSnapPriceNeverTightensLimit(t *testing.T) {
-	// Property check: a snapped back price is never above the requested price,
-	// and a snapped lay price is never below it.
+func TestSnapPriceNeverWorseThanRequest(t *testing.T) {
+	// Property check: a snapped limit is never worse than the request. Higher
+	// is better on a normal betslip, lower is better on a lay betslip.
 	for p := 1.01; p <= 999; p += 0.013 {
-		if back := SnapPrice(p, Back); back > p+1e-9 {
-			t.Fatalf("SnapPrice(%g, back) = %g, which is above the request", p, back)
+		back := SnapPrice(p, Back)
+		if back < p-1e-9 || !IsOnTick(back) {
+			t.Fatalf("SnapPrice(%g, back) = %g: below the request or off the schedule", p, back)
 		}
-		if lay := SnapPrice(p, Lay); lay < p-1e-9 {
-			t.Fatalf("SnapPrice(%g, lay) = %g, which is below the request", p, lay)
+		lay := SnapPrice(p, Lay)
+		if lay > p+1e-9 || !IsOnTick(lay) {
+			t.Fatalf("SnapPrice(%g, lay) = %g: above the request or off the schedule", p, lay)
 		}
 	}
 }

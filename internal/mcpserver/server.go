@@ -285,8 +285,9 @@ func (s *Server) register(m *mcp.Server) {
 	addTool(m, "snap_price",
 		"Snap a decimal price onto the API's tick schedule and report the tick size and "+
 			"implied probability. Runs locally with no API call. "+
-			"Off-tick order prices are rounded so they never tighten your limit: down for back ('for') orders, "+
-			"up for lay ('against') orders. Use this to know the price an order will actually run with.",
+			"On a normal betslip an off-tick limit moves up to the next tick (7.15 becomes 7.20), "+
+			"whether the bet type starts with 'for' or 'against'. On a lay betslip it moves down (2.31 becomes 2.30). "+
+			"Use this to know the price an order will actually run with.",
 		hints(true, false, true, false), s.snapPrice)
 
 	// Read-only: discovery over the stream.
@@ -418,10 +419,10 @@ func (s *Server) snapPrice(_ context.Context, _ *mcp.CallToolRequest, in snapPri
 		return nil, snapPriceResult{}, fmt.Errorf("price must be positive")
 	}
 
+	// The betslip type decides the rounding, not the bet type: an "against"
+	// bet type on a normal betslip still rounds up.
 	dir := magicmarkets.Back
-	if in.BetType != "" {
-		dir = magicmarkets.DirectionOf(in.BetType)
-	} else if in.Direction == string(magicmarkets.Lay) {
+	if in.Direction == string(magicmarkets.Lay) || in.Direction == magicmarkets.BetslipLay {
 		dir = magicmarkets.Lay
 	}
 
@@ -648,7 +649,7 @@ func (s *Server) placeOrder(ctx context.Context, _ *mcp.CallToolRequest, in plac
 		return nil, placeOrderResult{}, fmt.Errorf("look up betslip %s: %w", in.BetslipID, err)
 	}
 
-	dir := magicmarkets.DirectionOf(bs.BetType)
+	dir := magicmarkets.SnapDirection(bs.BetslipType)
 	snapped := magicmarkets.SnapPrice(in.Price, dir)
 
 	orderReq := in.request(snapped)

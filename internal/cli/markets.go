@@ -308,13 +308,15 @@ func (a *App) newTicksCmd() *cobra.Command {
 		Long: `Snap a decimal price onto the API's tick schedule.
 
 All prices lie on a fixed schedule whose tick widens as the price grows. An
-off-tick order price is rounded to the nearest valid tick that does not tighten
-your limit: down for back (for) orders, up for lay (against) orders.
+off-tick limit on a normal betslip moves up to the next tick, as the server
+does: 7.15 becomes 7.20. That holds for "for" and "against" bet types alike.
+On a lay betslip (betslip create --lay) the price is a lay price, lower is
+better, and an off-tick limit moves down: 2.31 becomes 2.30.
 
 Use this to see the price an order will actually run with before placing it.
 
-  magicmarkets ticks 2.345          # back order
-  magicmarkets ticks 2.345 --lay    # lay order`,
+  magicmarkets ticks 2.345          # order on a normal betslip
+  magicmarkets ticks 2.345 --lay    # order on a lay betslip`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := strconv.ParseFloat(args[0], 64)

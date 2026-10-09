@@ -354,8 +354,8 @@ func TestHTTPToolCallDoesNotNeedStickySessions(t *testing.T) {
 	if !ok {
 		t.Fatalf("structured content = %s, missing snapped", raw)
 	}
-	if snapped != 2.10 {
-		t.Errorf("snapped = %v, want 2.10", snapped)
+	if snapped != 2.12 { // a back price of 2.11 moves up to the next tick
+		t.Errorf("snapped = %v, want 2.12", snapped)
 	}
 	if n.Load() < 2 {
 		t.Fatalf("handler was hit %d time(s); need at least two replicas involved", n.Load())

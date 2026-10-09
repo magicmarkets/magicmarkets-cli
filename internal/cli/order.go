@@ -98,7 +98,7 @@ hours.`,
 				return fmt.Errorf("look up betslip %s: %w", betslipID, err)
 			}
 
-			dir := magicmarkets.DirectionOf(bs.BetType)
+			dir := magicmarkets.SnapDirection(bs.BetslipType)
 			snapped := magicmarkets.SnapPrice(priceFlag, dir)
 
 			score, err := parseCurrentScore(currentScore)

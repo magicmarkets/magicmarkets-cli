@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -334,7 +335,7 @@ func TestHTTPToolCallDoesNotNeedStickySessions(t *testing.T) {
 
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "snap_price",
-		Arguments: map[string]any{"price": 2.11, "direction": "for"},
+		Arguments: map[string]any{"price": 2.11, "betslip_type": "normal"},
 	})
 	if err != nil {
 		t.Fatalf("snap_price: %v", err)
@@ -355,8 +356,8 @@ func TestHTTPToolCallDoesNotNeedStickySessions(t *testing.T) {
 	if !ok {
 		t.Fatalf("structured content = %s, missing snapped", raw)
 	}
-	if snapped != 2.10 {
-		t.Errorf("snapped = %v, want 2.10", snapped)
+	if snapped != 2.12 { // on a normal betslip 2.11 moves up to the next tick
+		t.Errorf("snapped = %v, want 2.12", snapped)
 	}
 	if n.Load() < 2 {
 		t.Fatalf("handler was hit %d time(s); need at least two replicas involved", n.Load())
@@ -898,5 +899,33 @@ func TestHTTPListEventOffersRequiresEvent(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Fatal("want isError without event_id or event_ids")
+	}
+}
+
+func TestSnapPriceByBetslipType(t *testing.T) {
+	s := &Server{}
+	cases := []struct {
+		betslipType string
+		price, want float64
+	}{
+		{"", 7.15, 7.20},         // defaults to normal: up
+		{"normal", 1.985, 1.99},  // up, even for an against bet type
+		{"lay", 2.31, 2.30},      // down
+		{"parlay", 7.153, 7.153}, // accumulator prices are not snapped
+	}
+	for _, c := range cases {
+		_, got, err := s.snapPrice(context.Background(), nil, snapPriceInput{Price: c.price, BetslipType: c.betslipType})
+		if err != nil {
+			t.Fatalf("snapPrice(%g, %q): %v", c.price, c.betslipType, err)
+		}
+		if math.Abs(got.Snapped-c.want) > 1e-9 {
+			t.Errorf("snapPrice(%g, %q) = %g, want %g", c.price, c.betslipType, got.Snapped, c.want)
+		}
+	}
+
+	// "against" is a bet-type direction, not a betslip type; guessing would
+	// round an against bet on a normal betslip the wrong way.
+	if _, _, err := s.snapPrice(context.Background(), nil, snapPriceInput{Price: 2.31, BetslipType: "against"}); err == nil {
+		t.Error(`snapPrice with betslip_type "against" should be rejected`)
 	}
 }

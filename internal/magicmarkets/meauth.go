@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -130,18 +131,6 @@ type firebaseTokenResponse struct {
 }
 
 func (r *MeResolver) fetch(ctx context.Context, accessToken string) (MeCredential, error) {
-	// The session header needs the player's uuid. The Authorization Server's exchange
-	// response doesn't carry it (it only returns firebase_token), so it's read directly off
-	// the access token we already hold — unverified, since it's only used to build an opaque
-	// session string, never for an authorization decision. The actual authorization check
-	// happens server-side, against the token's verified signature, in the exchange call
-	// below.
-	uuid, err := subjectFromAccessToken(accessToken)
-	if err != nil {
-		return MeCredential{}, fmt.Errorf("read subject from access token: %w", err)
-	}
-	r.trace("meauth: access token sub=%s, group=%s", uuid, r.groupID)
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.issuer+"/oauth2/firebase-token", nil)
 	if err != nil {
 		return MeCredential{}, fmt.Errorf("build firebase-token exchange request: %w", err)
@@ -183,11 +172,17 @@ func (r *MeResolver) fetch(ctx context.Context, accessToken string) (MeCredentia
 		return MeCredential{}, err
 	}
 	r.trace("meauth: redeemed ID token ...%s", redactTail(idToken))
+	claims, err := checkMagicClaims(idToken)
+	if err != nil {
+		return MeCredential{}, err
+	}
 
-	return MeCredential{
-		JWT:     idToken,
-		Session: fmt.Sprintf("m-%s-%s", r.groupID, uuid),
-	}, nil
+	// The API binds a magic session to the magic-metadata-jwt it travels with: the id must be
+	// m-<group>-<uuid>-<iat>, with the ID token's own uuid (lowercase, as the API compares it)
+	// and iat.
+	session := fmt.Sprintf("m-%s-%s-%d", r.groupID, strings.ToLower(claims.UUID), claims.Iat)
+	r.trace("meauth: session=%s, group=%s", session, r.groupID)
+	return MeCredential{JWT: idToken, Session: session}, nil
 }
 
 // signInWithCustomTokenResponse is the shape of Firebase's
@@ -242,25 +237,78 @@ func redeemCustomToken(ctx context.Context, httpClient *http.Client, endpoint, c
 	return out.IDToken, nil
 }
 
-// subjectFromAccessToken reads the "sub" claim from a JWT's payload without verifying its
-// signature. See the caller in fetch for why that's safe here.
-func subjectFromAccessToken(accessToken string) (string, error) {
-	parts := strings.Split(accessToken, ".")
+// uuidPattern matches the canonical hyphenated UUID form the API builds the magic username from.
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// magicClaims are the ID token claims the session id is built from.
+type magicClaims struct {
+	UUID string
+	Iat  int64
+}
+
+// checkMagicClaims rejects an ID token the API would turn away, so the failure names the
+// claim at fault instead of surfacing as magic-api's bare 401 "Authentication credentials
+// were not provided." (magic-api reports any magic session it can't build as not
+// authenticated). The checks mirror the API's magic-customer claim requirements and its
+// session-id binding, which needs uuid and iat. The issuer allowlist is not checked here:
+// it is per-environment server configuration.
+//
+// The claims come from the Authorization Server's /oauth2/firebase-token custom token, which
+// Firebase copies into the ID token; a failure here means that exchange is minting tokens
+// without them. The signature is not verified — the API does that.
+func checkMagicClaims(idToken string) (magicClaims, error) {
+	var claims struct {
+		UUID           *string  `json:"uuid"`
+		Tenant         *string  `json:"tenant"`
+		Iat            *int64   `json:"iat"`
+		CcyCode        *string  `json:"ccy_code"`
+		CommissionRate *float64 `json:"commission_rate"`
+	}
+	if err := decodeJWTClaims(idToken, &claims); err != nil {
+		return magicClaims{}, fmt.Errorf("magic-metadata-jwt: %w", err)
+	}
+	var problems []string
+	switch {
+	case claims.UUID == nil:
+		problems = append(problems, "uuid claim missing")
+	case !uuidPattern.MatchString(*claims.UUID):
+		problems = append(problems, fmt.Sprintf("uuid claim %q is not a UUID", *claims.UUID))
+	}
+	switch {
+	case claims.Tenant == nil:
+		problems = append(problems, `tenant claim missing (want "magicmarkets")`)
+	case *claims.Tenant != "magicmarkets":
+		problems = append(problems, fmt.Sprintf(`tenant claim is %q, want "magicmarkets"`, *claims.Tenant))
+	}
+	if claims.Iat == nil {
+		problems = append(problems, "iat claim missing")
+	}
+	if claims.CcyCode != nil && *claims.CcyCode != "USDT" {
+		problems = append(problems, fmt.Sprintf(`ccy_code claim is %q, want "USDT"`, *claims.CcyCode))
+	}
+	if claims.CommissionRate != nil {
+		problems = append(problems, "commission_rate claim must be absent or null")
+	}
+	if len(problems) > 0 {
+		return magicClaims{}, fmt.Errorf("magic-metadata-jwt would be rejected by the v2 API: %s "+
+			"(the claims come from the Authorization Server's /oauth2/firebase-token custom token)",
+			strings.Join(problems, "; "))
+	}
+	return magicClaims{UUID: *claims.UUID, Iat: *claims.Iat}, nil
+}
+
+// decodeJWTClaims unmarshals a JWT's payload into out without verifying its signature.
+func decodeJWTClaims(token string, out any) error {
+	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "", fmt.Errorf("not a JWT: want 3 dot-separated parts, got %d", len(parts))
+		return fmt.Errorf("not a JWT: want 3 dot-separated parts, got %d", len(parts))
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", fmt.Errorf("decode payload: %w", err)
+		return fmt.Errorf("decode payload: %w", err)
 	}
-	var claims struct {
-		Sub string `json:"sub"`
+	if err := json.Unmarshal(payload, out); err != nil {
+		return fmt.Errorf("parse payload: %w", err)
 	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", fmt.Errorf("parse payload: %w", err)
-	}
-	if claims.Sub == "" {
-		return "", fmt.Errorf("token has no sub claim")
-	}
-	return claims.Sub, nil
+	return nil
 }

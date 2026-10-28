@@ -185,6 +185,42 @@ func (e ErrorEnvelopeStatus) Valid() bool {
 	}
 }
 
+// Defines values for EventEventType.
+const (
+	EventEventTypeMultirunner EventEventType = "multirunner"
+	EventEventTypeNormal      EventEventType = "normal"
+)
+
+// Valid indicates whether the value is a known member of the EventEventType enum.
+func (e EventEventType) Valid() bool {
+	switch e {
+	case EventEventTypeMultirunner:
+		return true
+	case EventEventTypeNormal:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for EventIrStatus.
+const (
+	EventIrStatusInRunning EventIrStatus = "in_running"
+	EventIrStatusPreEvent  EventIrStatus = "pre_event"
+)
+
+// Valid indicates whether the value is a known member of the EventIrStatus enum.
+func (e EventIrStatus) Valid() bool {
+	switch e {
+	case EventIrStatusInRunning:
+		return true
+	case EventIrStatusPreEvent:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EventInfoEventType.
 const (
 	EventInfoEventTypeMultirunner EventInfoEventType = "multirunner"
@@ -200,6 +236,21 @@ func (e EventInfoEventType) Valid() bool {
 	case EventInfoEventTypeNormal:
 		return true
 	case EventInfoEventTypeParlay:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for EventListEnvelopeStatus.
+const (
+	EventListEnvelopeStatusOk EventListEnvelopeStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the EventListEnvelopeStatus enum.
+func (e EventListEnvelopeStatus) Valid() bool {
+	switch e {
+	case EventListEnvelopeStatusOk:
 		return true
 	default:
 		return false
@@ -245,6 +296,21 @@ const (
 func (e HeartbeatListEnvelopeStatus) Valid() bool {
 	switch e {
 	case HeartbeatListEnvelopeStatusOk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OfferListEnvelopeStatus.
+const (
+	OfferListEnvelopeStatusOk OfferListEnvelopeStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the OfferListEnvelopeStatus enum.
+func (e OfferListEnvelopeStatus) Valid() bool {
+	switch e {
+	case OfferListEnvelopeStatusOk:
 		return true
 	default:
 		return false
@@ -422,6 +488,45 @@ func (e XRatesEnvelopeStatus) Valid() bool {
 	}
 }
 
+// Defines values for GetV2EventsParamsLang.
+const (
+	GetV2EventsParamsLangEn     GetV2EventsParamsLang = "en"
+	GetV2EventsParamsLangKo     GetV2EventsParamsLang = "ko"
+	GetV2EventsParamsLangZhHans GetV2EventsParamsLang = "zh-hans"
+)
+
+// Valid indicates whether the value is a known member of the GetV2EventsParamsLang enum.
+func (e GetV2EventsParamsLang) Valid() bool {
+	switch e {
+	case GetV2EventsParamsLangEn:
+		return true
+	case GetV2EventsParamsLangKo:
+		return true
+	case GetV2EventsParamsLangZhHans:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetV2EventsParamsIrStatus.
+const (
+	GetV2EventsParamsIrStatusInRunning GetV2EventsParamsIrStatus = "in_running"
+	GetV2EventsParamsIrStatusPreEvent  GetV2EventsParamsIrStatus = "pre_event"
+)
+
+// Valid indicates whether the value is a known member of the GetV2EventsParamsIrStatus enum.
+func (e GetV2EventsParamsIrStatus) Valid() bool {
+	switch e {
+	case GetV2EventsParamsIrStatusInRunning:
+		return true
+	case GetV2EventsParamsIrStatusPreEvent:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PostV2OrdersCloseMany200JSONResponseBodyStatus.
 const (
 	PostV2OrdersCloseMany200JSONResponseBodyStatusOk PostV2OrdersCloseMany200JSONResponseBodyStatus = "ok"
@@ -439,19 +544,19 @@ func (e PostV2OrdersCloseMany200JSONResponseBodyStatus) Valid() bool {
 
 // Defines values for GetV2StreamParamsLang.
 const (
-	En     GetV2StreamParamsLang = "en"
-	Ko     GetV2StreamParamsLang = "ko"
-	ZhHans GetV2StreamParamsLang = "zh-hans"
+	GetV2StreamParamsLangEn     GetV2StreamParamsLang = "en"
+	GetV2StreamParamsLangKo     GetV2StreamParamsLang = "ko"
+	GetV2StreamParamsLangZhHans GetV2StreamParamsLang = "zh-hans"
 )
 
 // Valid indicates whether the value is a known member of the GetV2StreamParamsLang enum.
 func (e GetV2StreamParamsLang) Valid() bool {
 	switch e {
-	case En:
+	case GetV2StreamParamsLangEn:
 		return true
-	case Ko:
+	case GetV2StreamParamsLangKo:
 		return true
-	case ZhHans:
+	case GetV2StreamParamsLangZhHans:
 		return true
 	default:
 		return false
@@ -475,7 +580,7 @@ type BalanceResponse struct {
 	// OpenStake Total stake on open bets, positive
 	OpenStake StakeTuple `json:"open_stake"`
 
-	// SmartCredit Smart credit, or null when the account has none
+	// SmartCredit Extra funds available for betting on top of the balance, equal to the amount the account is expected to win from the bets already placed. Null when the account has no smart credit.
 	SmartCredit *StakeTuple `json:"smart_credit"`
 }
 
@@ -699,6 +804,43 @@ type ErrorEnvelope struct {
 // ErrorEnvelopeStatus defines model for ErrorEnvelope.Status.
 type ErrorEnvelopeStatus string
 
+// Event An event that currently has prices, identical to the stream's `event` payload. `event_type` gives the shape: `normal` has `home` and `away`, `multirunner` has `teams` and `end_time`.
+type Event struct {
+	// Away Normal events only
+	Away *string `json:"away,omitempty"`
+
+	// CompetitionCountry Country code of the competition, for example `US`, or `XE` for England.
+	CompetitionCountry *string `json:"competition_country,omitempty"`
+	CompetitionID      *int    `json:"competition_id,omitempty"`
+	CompetitionName    *string `json:"competition_name,omitempty"`
+
+	// EndTime Race end time (multirunner events only)
+	EndTime   *time.Time      `json:"end_time,omitempty"`
+	EventID   *string         `json:"event_id,omitempty"`
+	EventName *string         `json:"event_name,omitempty"`
+	EventType *EventEventType `json:"event_type,omitempty"`
+
+	// Home Normal events only
+	Home     *string        `json:"home,omitempty"`
+	IrStatus *EventIrStatus `json:"ir_status,omitempty"`
+
+	// Sport Sport code
+	Sport     *string    `json:"sport,omitempty"`
+	StartTime *time.Time `json:"start_time,omitempty"`
+
+	// Teams Runner list (multirunner events only)
+	Teams *struct {
+		Name   *string `json:"name,omitempty"`
+		TeamID *int    `json:"team_id,omitempty"`
+	} `json:"teams,omitempty"`
+}
+
+// EventEventType defines model for Event.EventType.
+type EventEventType string
+
+// EventIrStatus defines model for Event.IrStatus.
+type EventIrStatus string
+
 // EventInfo defines model for EventInfo.
 type EventInfo struct {
 	// AwayID Normal events only
@@ -744,6 +886,19 @@ type EventInfoEventType string
 type EventInfo_Result struct {
 	union json.RawMessage
 }
+
+// EventList Events that currently have prices.
+type EventList = []Event
+
+// EventListEnvelope defines model for EventListEnvelope.
+type EventListEnvelope struct {
+	// Data Events that currently have prices.
+	Data   *EventList               `json:"data,omitempty"`
+	Status *EventListEnvelopeStatus `json:"status,omitempty"`
+}
+
+// EventListEnvelopeStatus defines model for EventListEnvelope.Status.
+type EventListEnvelopeStatus string
 
 // EventResultHockey Ice hockey. `tpN_*` are the three period scores; `tall_*` the regulation total; `pen_*` the penalty-shootout score.
 type EventResultHockey struct {
@@ -858,6 +1013,36 @@ type LiveScore struct {
 	Home int `json:"home"`
 }
 
+// Offer The stake available at each price for one market, identical to the stream's `offer` payload.
+type Offer struct {
+	// BetType The market and side: market type, line, outcome and `for` or `against`. `POST /v2/betslips/` accepts it as is.
+	BetType *string `json:"bet_type,omitempty"`
+	EventID *string `json:"event_id,omitempty"`
+
+	// InRunning Whether the event was in running when this offer was priced.
+	InRunning *bool `json:"in_running,omitempty"`
+
+	// MarketType Market family the bet type belongs to (e.g. `ah`, `wdw`, `ou`).
+	MarketType *string `json:"market_type,omitempty"`
+
+	// PriceList Prices sorted descending (best price first).
+	PriceList *PriceLevelList `json:"price_list,omitempty"`
+	Sport     *string         `json:"sport,omitempty"`
+}
+
+// OfferList One entry per market.
+type OfferList = []Offer
+
+// OfferListEnvelope defines model for OfferListEnvelope.
+type OfferListEnvelope struct {
+	// Data One entry per market.
+	Data   *OfferList               `json:"data,omitempty"`
+	Status *OfferListEnvelopeStatus `json:"status,omitempty"`
+}
+
+// OfferListEnvelopeStatus defines model for OfferListEnvelope.Status.
+type OfferListEnvelopeStatus string
+
 // OrderCreateRequest defines model for OrderCreateRequest.
 type OrderCreateRequest struct {
 	AcceptBetterPrice *bool  `json:"accept_better_price,omitempty"`
@@ -889,7 +1074,7 @@ type OrderCreateRequest struct {
 	// PlacerType Optional caller-supplied tag recorded against the order.
 	PlacerType *string `json:"placer_type,omitempty"`
 
-	// Price Desired decimal price. Off-tick prices are rounded down for back (`for`) orders and up for lay (`against`) orders; see "Price ticks".
+	// Price Limit decimal price. A bet is taken only at this price or better, and an off-tick limit moves to the first tick that honours it; see "Price ticks".
 	Price float64 `json:"price"`
 
 	// RequestUUID Idempotency key
@@ -1115,6 +1300,9 @@ type PriceLevel struct {
 	} `json:"effective,omitempty"`
 }
 
+// PriceLevelList Prices sorted descending (best price first).
+type PriceLevelList = []PriceLevel
+
 // StakeTuple [currency, amount] tuple, e.g. ["USDT", 115.38]. Generated as an untyped array because oapi-codegen cannot express an OpenAPI 3.1 tuple; magicmarkets.Stake is the typed equivalent.
 type StakeTuple = []interface{}
 
@@ -1142,16 +1330,82 @@ type Error401 = ErrorEnvelope
 // Error403 Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 type Error403 = ErrorEnvelope
 
+// Error403Feed Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+type Error403Feed = ErrorEnvelope
+
 // Error429 Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 type Error429 = ErrorEnvelope
 
 // Error500 Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
 type Error500 = ErrorEnvelope
 
+// Error503Feed Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+type Error503Feed = ErrorEnvelope
+
+// GetV2EventsParams defines parameters for GetV2Events.
+type GetV2EventsParams struct {
+	// Sport Sport codes to keep. Repeatable, up to 100 values; omit for every sport. Required alongside `event_id` or `competition_id`. See "Sports & bet types" in the introduction.
+	Sport *[]string `form:"sport,omitempty" json:"sport,omitempty"`
+
+	// CompetitionID Competitions to keep. Repeatable, up to 100 values; omit for every competition. Requires `sport`.
+	CompetitionID *[]int `form:"competition_id,omitempty" json:"competition_id,omitempty"`
+
+	// EventID Events to keep. Repeatable, up to 100 values; omit for every event. Requires `sport`. Each value is an event's `event_id`, such as `2026-06-15,1001,2002`; any other form gets a 400.
+	EventID *[]string `form:"event_id,omitempty" json:"event_id,omitempty"`
+
+	// Lang Language for competition and team names.
+	Lang *GetV2EventsParamsLang `form:"lang,omitempty" json:"lang,omitempty"`
+
+	// Limit Events per page.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// After Cursor - the previous page's last `"{sport},{event_id}"`.
+	After *string `form:"after,omitempty" json:"after,omitempty"`
+
+	// StartTimeFrom Keep events starting at or after this instant, 1970 or later. An event whose start time is unknown is never inside a window.
+	StartTimeFrom *time.Time `form:"start_time_from,omitempty" json:"start_time_from,omitempty"`
+
+	// StartTimeTo Keep events starting before this instant, 1970 or later. The window is half-open, so an event starting exactly at this instant is excluded.
+	StartTimeTo *time.Time `form:"start_time_to,omitempty" json:"start_time_to,omitempty"`
+
+	// IrStatus Keep events with this `ir_status`. Omit for both.
+	IrStatus *GetV2EventsParamsIrStatus `form:"ir_status,omitempty" json:"ir_status,omitempty"`
+}
+
+// GetV2EventsParamsLang defines parameters for GetV2Events.
+type GetV2EventsParamsLang string
+
+// GetV2EventsParamsIrStatus defines parameters for GetV2Events.
+type GetV2EventsParamsIrStatus string
+
 // PostV2HeartbeatsJSONBody defines parameters for PostV2Heartbeats.
 type PostV2HeartbeatsJSONBody struct {
 	// Timeout Seconds before the heartbeat expires
 	Timeout int `json:"timeout"`
+}
+
+// GetV2OffersParams defines parameters for GetV2Offers.
+type GetV2OffersParams struct {
+	// Sport Sport code. See "Sports & bet types" in the introduction.
+	Sport string `form:"sport" json:"sport"`
+
+	// EventID Events to price. Repeatable, up to 20 per request. Each value is an event's `event_id`, such as `2026-06-15,1001,2002`; any other form gets a 400.
+	EventID []string `form:"event_id" json:"event_id"`
+
+	// BetType Markets to keep. Repeatable, up to 100 values; omit for every market on the event. See "Sports & bet types" in the introduction.
+	BetType *[]string `form:"bet_type,omitempty" json:"bet_type,omitempty"`
+
+	// MarketType Market families to keep, as in an offer's `market_type`. Repeatable, up to 100 values; omit for every family.
+	MarketType *[]string `form:"market_type,omitempty" json:"market_type,omitempty"`
+
+	// MinLiquidity USDT. Keep markets whose `max` stakes, added up across the `price_list`, come to at least this.
+	MinLiquidity *float64 `form:"min_liquidity,omitempty" json:"min_liquidity,omitempty"`
+
+	// Limit Offers per page.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// After Cursor - the previous page's last `"{event_id},{bet_type}"`.
+	After *string `form:"after,omitempty" json:"after,omitempty"`
 }
 
 // GetV2OrdersParams defines parameters for GetV2Orders.

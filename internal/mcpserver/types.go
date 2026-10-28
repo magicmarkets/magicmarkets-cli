@@ -139,6 +139,7 @@ type event struct {
 	EventID         string `json:"event_id"`
 	EventType       string `json:"event_type"`
 	EventName       string `json:"event_name"`
+	CompetitionID   int    `json:"competition_id,omitempty"`
 	CompetitionName string `json:"competition_name"`
 	Country         string `json:"country"`
 	IRStatus        string `json:"ir_status"`
@@ -149,6 +150,7 @@ type event struct {
 }
 
 type offer struct {
+	EventID    string       `json:"event_id"`
 	BetType    string       `json:"bet_type"`
 	MarketType string       `json:"market_type"`
 	InRunning  bool         `json:"in_running"`
@@ -214,17 +216,25 @@ type snapPriceInput struct {
 }
 
 type listEventsInput struct {
-	Sport  string  `json:"sport,omitempty" jsonschema:"Comma-separated sport codes to keep, e.g. 'fb,tennis'."`
-	Search string  `json:"search,omitempty" jsonschema:"Case-insensitive match on event, team or competition name."`
-	Limit  float64 `json:"limit,omitempty" jsonschema:"Maximum events to return (default 50)."`
-	InPlay bool    `json:"in_play,omitempty" jsonschema:"Only events that are in play."`
+	Sport         string  `json:"sport,omitempty" jsonschema:"Comma-separated sport codes to keep, e.g. 'fb,tennis'."`
+	CompetitionID []int   `json:"competition_id,omitempty" jsonschema:"Competition IDs to keep, from a previous list_events. Requires sport."`
+	Search        string  `json:"search,omitempty" jsonschema:"Case-insensitive match on event, team or competition name."`
+	InPlay        bool    `json:"in_play,omitempty" jsonschema:"Only events that are in play."`
+	PreEvent      bool    `json:"pre_event,omitempty" jsonschema:"Only events that have not started."`
+	StartsAfter   string  `json:"starts_after,omitempty" jsonschema:"Only events starting at or after this instant, RFC 3339, e.g. '2026-06-15T00:00:00Z'."`
+	StartsBefore  string  `json:"starts_before,omitempty" jsonschema:"Only events starting before this instant, RFC 3339."`
+	Limit         float64 `json:"limit,omitempty" jsonschema:"Maximum events to return (default 50)."`
+	After         string  `json:"after,omitempty" jsonschema:"Paging cursor: the next_after value from a previous call with the same filters."`
 }
 
 type listEventOffersInput struct {
-	Sport      string  `json:"sport" jsonschema:"Sport code, e.g. 'fb'."`
-	EventID    string  `json:"event_id" jsonschema:"Event ID, e.g. '2026-06-15,1001,2002'."`
-	MarketType string  `json:"market_type,omitempty" jsonschema:"Only this market type, e.g. 'ah'."`
-	Limit      float64 `json:"limit,omitempty" jsonschema:"Maximum offers to return (default 100)."`
+	Sport        string   `json:"sport" jsonschema:"Sport code, e.g. 'fb'."`
+	EventID      string   `json:"event_id,omitempty" jsonschema:"One event ID, e.g. '2026-06-15,1001,2002'. Use event_ids for several."`
+	EventIDs     []string `json:"event_ids,omitempty" jsonschema:"Several event IDs of the same sport, to compare their markets in one call."`
+	MarketType   string   `json:"market_type,omitempty" jsonschema:"Comma-separated market families to keep, e.g. 'ah,ou'."`
+	BetTypes     []string `json:"bet_types,omitempty" jsonschema:"Only these exact bet types, e.g. ['for,ah,h,-4']."`
+	MinLiquidity float64  `json:"min_liquidity,omitempty" jsonschema:"USDT. Only markets whose stake summed across all prices is at least this."`
+	Limit        float64  `json:"limit,omitempty" jsonschema:"Maximum offers to return (default 100)."`
 }
 
 type listOrdersInput struct {
@@ -247,6 +257,10 @@ type getOrderInput struct {
 type getBetslipInput struct {
 	BetslipID   string  `json:"betslip_id" jsonschema:"Betslip ID."`
 	WaitSeconds float64 `json:"wait_seconds,omitempty" jsonschema:"Poll up to this long for a quote (default 0)."`
+}
+
+type closeBetslipInput struct {
+	BetslipID string `json:"betslip_id" jsonschema:"Betslip ID."`
 }
 
 type createBetslipInput struct {
@@ -323,18 +337,27 @@ type snapPriceResult struct {
 }
 
 type listEventsResult struct {
-	Count     int     `json:"count"`
-	TotalSeen int     `json:"total_seen"`
+	Count int `json:"count"`
+	// Scanned is how many events were read to fill this page; with search
+	// set it can be far more than Count.
+	Scanned   int     `json:"scanned"`
 	Events    []event `json:"events"`
+	NextAfter string  `json:"next_after,omitempty"`
 	NextStep  string  `json:"next_step"`
 }
 
 type listEventOffersResult struct {
-	Sport    string  `json:"sport"`
-	EventID  string  `json:"event_id"`
-	Count    int     `json:"count"`
-	Offers   []offer `json:"offers"`
-	NextStep string  `json:"next_step"`
+	Sport     string   `json:"sport"`
+	EventIDs  []string `json:"event_ids"`
+	Count     int      `json:"count"`
+	Truncated bool     `json:"truncated,omitempty"`
+	Offers    []offer  `json:"offers"`
+	NextStep  string   `json:"next_step"`
+}
+
+type closeBetslipResult struct {
+	BetslipID string `json:"betslip_id"`
+	Closed    bool   `json:"closed"`
 }
 
 type listOrdersResult struct {

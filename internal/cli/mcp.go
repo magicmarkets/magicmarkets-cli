@@ -12,7 +12,6 @@ import (
 
 func (a *App) newMCPCmd() *cobra.Command {
 	var (
-		timeout    time.Duration
 		printTools bool
 		httpMode   bool
 		addr       string
@@ -120,10 +119,9 @@ Verify which tools would be registered with: magicmarkets mcp --print-tools`,
 			trading := a.cfg.AllowTrading
 
 			opts := mcpserver.Options{
-				AllowTrading:    trading,
-				Version:         a.version,
-				SnapshotTimeout: timeout,
-				PublicURL:       publicURL,
+				AllowTrading: trading,
+				Version:      a.version,
+				PublicURL:    publicURL,
 			}
 
 			// --print-tools is a diagnostic: it answers "is trading on?" without
@@ -169,8 +167,10 @@ Verify which tools would be registered with: magicmarkets mcp --print-tools`,
 	}
 
 	fl := cmd.Flags()
-	fl.DurationVar(&timeout, "snapshot-timeout", 30*time.Second,
-		"how long the discovery tools wait on the stream")
+	// Discovery moved from the stream to REST, so this no longer does
+	// anything. Kept so existing client configs that pass it still start.
+	fl.Duration("snapshot-timeout", 30*time.Second, "unused")
+	_ = fl.MarkDeprecated("snapshot-timeout", "discovery no longer uses the stream")
 	fl.BoolVar(&printTools, "print-tools", false,
 		"list the tools that would be registered, then exit")
 	fl.BoolVar(&httpMode, "http", false,

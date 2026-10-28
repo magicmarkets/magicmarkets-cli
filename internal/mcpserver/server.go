@@ -24,6 +24,10 @@ import (
 // HTTPPath is where the streamable HTTP transport is mounted.
 const HTTPPath = "/mcp"
 
+// serverCardPath is where an operator-supplied server card is served — see
+// servercard.go.
+const serverCardPath = HTTPPath + "/server-card"
+
 // Options configures the MCP server.
 type Options struct {
 	// AllowTrading registers the tools that create betslips, place orders and
@@ -32,10 +36,6 @@ type Options struct {
 
 	// Version is reported to the MCP client.
 	Version string
-
-	// SnapshotTimeout bounds how long the event and offer tools wait on the
-	// stream before giving up.
-	SnapshotTimeout time.Duration
 
 	// PublicURL is the externally-reachable base of this server, without a
 	// trailing /mcp. Advertised in OAuth protected-resource metadata so a
@@ -60,9 +60,6 @@ type Server struct {
 
 // New builds the MCP server.
 func New(client *magicmarkets.Client, cfg *config.Config, opts Options) *Server {
-	if opts.SnapshotTimeout <= 0 {
-		opts.SnapshotTimeout = 30 * time.Second
-	}
 	if opts.OAuthIssuer == "" {
 		if cfg != nil && cfg.OAuthIssuer != "" {
 			opts.OAuthIssuer = cfg.OAuthIssuer
@@ -149,13 +146,9 @@ func (s *Server) httpHandler() http.Handler {
 			return nil
 		}
 		cfg := *s.cfg
-		if cred.APIKey != "" {
-			cfg.APIKey = cred.APIKey
-			cfg.AccessToken = ""
-		} else {
-			cfg.AccessToken = cred.Bearer
-			cfg.APIKey = ""
-		}
+		// Per-request credential only. A Bearer call leaves APIKey empty so
+		// the copied config does not keep a process-level key.
+		cfg.APIKey = cred.APIKey
 		clientOpts := []magicmarkets.Option{
 			magicmarkets.WithUserAgent("magicmarkets-cli/" + s.opts.Version),
 			magicmarkets.WithMeResolver(resolver),
@@ -168,6 +161,7 @@ func (s *Server) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(HTTPPath, requireCallerCredential(s.resourceMetadataURL, streamable))
 	s.mountOAuth(mux)
+	mux.HandleFunc(serverCardPath, s.serveServerCard)
 	mux.HandleFunc("/health", probeOK)
 	mux.HandleFunc("/live", probeOK)
 	return mux
@@ -289,21 +283,24 @@ func (s *Server) register(m *mcp.Server) {
 			"up for lay ('against') orders. Use this to know the price an order will actually run with.",
 		hints(true, false, true, false), s.snapPrice)
 
-	// Read-only: discovery over the stream.
+	// Read-only: market discovery over REST.
 	addTool(m, "list_events",
-		"List the events that currently have live prices. "+
-			"The REST API has no event-listing endpoint, so this opens the WebSocket, reads the initial "+
-			"snapshot and disconnects — it takes a few seconds. The snapshot is not the full fixture list: "+
-			"it holds only events the feed is pricing right now. "+
+		"List the events that currently have prices, filtered on the server by sport, competition, "+
+			"in-play status and start-time window. Only priced events appear — this is not a fixture list. "+
+			"search matches event, team and competition names; it is applied while paging, so a narrow "+
+			"sport or time window makes it faster. When next_after is returned, pass it back as after "+
+			"(with the same filters) for the next page. "+
 			"Use the returned sport and event_id with list_event_offers to see bet types and prices.",
-		hints(true, false, false, true), s.listEvents)
+		hints(true, false, true, true), s.listEvents)
 	addTool(m, "list_event_offers",
-		"List the priced bet types on one event, with the stake available at each price. "+
-			"Opens the WebSocket, registers the event, reads the offer snapshot and disconnects. "+
-			"Each offer covers one (sport, event_id, bet_type) triple; back and lay on the same selection are "+
+		"List the priced bet types on one or more events of one sport, with the stake available at each price. "+
+			"Pass several event_ids to compare markets across matches in one call, and min_liquidity "+
+			"(USDT) to keep only markets with real depth. "+
+			"Each offer covers one (event_id, bet_type) pair; back and lay on the same selection are "+
 			"separate offers. Pass a returned bet_type verbatim to create_betslip — never construct one by hand. "+
-			"Prices are ordered best first and are already on the tick schedule.",
-		hints(true, false, false, true), s.listEventOffers)
+			"Prices are ordered best first and are already on the tick schedule. "+
+			"Prices can trail the live market by a few seconds; the betslip quote is authoritative.",
+		hints(true, false, true, true), s.listEventOffers)
 
 	// Read-only: orders and betslips.
 	addTool(m, "list_orders",
@@ -334,6 +331,10 @@ func (s *Server) register(m *mcp.Server) {
 			"Take bet_type verbatim from list_event_offers. Betslips are short-lived and carry no price at "+
 			"creation, so set wait_seconds to poll for the quote.",
 		hints(false, false, false, true), s.createBetslip)
+	addTool(m, "close_betslip",
+		"Close an open betslip you no longer intend to trade on: its quotes stop and it stops counting "+
+			"toward the open-betslip cap. Commits nothing and cancels no orders.",
+		hints(false, false, false, true), s.closeBetslip)
 	addTool(m, "place_order",
 		"Place an order against a betslip. THIS SPENDS REAL MONEY. "+
 			"Requires an existing betslip from create_betslip. The price is snapped onto the tick schedule "+
@@ -437,73 +438,83 @@ func (s *Server) snapPrice(_ context.Context, _ *mcp.CallToolRequest, in snapPri
 }
 
 func (s *Server) listEvents(ctx context.Context, _ *mcp.CallToolRequest, in listEventsInput) (*mcp.CallToolResult, listEventsResult, error) {
-	stream, err := s.dial(ctx)
+	f, err := in.eventFilter(s.cfg.Lang)
 	if err != nil {
 		return nil, listEventsResult{}, err
 	}
-	defer stream.Close()
-
-	events, err := stream.Snapshot(ctx, s.opts.SnapshotTimeout)
-	if err != nil && len(events) == 0 {
-		return nil, listEventsResult{}, err
-	}
-
-	wanted := map[string]bool{}
-	for _, sp := range parseCSV(in.Sport) {
-		wanted[strings.ToLower(sp)] = true
-	}
-	needle := strings.ToLower(in.Search)
-
 	limit := int(in.Limit)
 	if limit <= 0 {
 		limit = 50
 	}
+	needle := strings.ToLower(in.Search)
 
-	out := make([]event, 0, limit)
-	for _, e := range events {
-		if len(wanted) > 0 && !wanted[strings.ToLower(e.Sport)] {
-			continue
-		}
-		if in.InPlay && (e.IRStatus == "" || e.IRStatus == "pre_event") {
-			continue
-		}
-		if needle != "" && !strings.Contains(strings.ToLower(
-			e.EventName+" "+e.Home+" "+e.Away+" "+e.CompetitionName+" "+e.EventID), needle) {
-			continue
-		}
-		row := eventFromStream(e)
-		out = append(out, row)
-		if len(out) >= limit {
-			break
-		}
+	// Without a search every event the server returns is kept, so a page of
+	// limit+1 is enough to know whether more follow. A search filters
+	// locally and has to scan full pages.
+	pageSize := limit + 1
+	if needle != "" {
+		pageSize = magicmarkets.MaxMarketPage
 	}
 
-	return nil, listEventsResult{
-		Count:     len(out),
-		TotalSeen: len(events),
-		Events:    out,
-		NextStep:  "Call list_event_offers with a sport and event_id to see priced bet types.",
-	}, nil
+	out := make([]event, 0, limit)
+	var (
+		scanned int
+		last    magicmarkets.StreamEvent
+		more    bool
+	)
+	err = s.client.EachEvent(ctx, f, pageSize, in.After, func(e magicmarkets.StreamEvent) bool {
+		if needle != "" && !eventMatches(e, needle) {
+			scanned++
+			last = e
+			return true
+		}
+		if len(out) == limit {
+			more = true
+			return false
+		}
+		scanned++
+		last = e
+		out = append(out, eventFromStream(e))
+		return true
+	})
+	if err != nil {
+		return nil, listEventsResult{}, err
+	}
+
+	res := listEventsResult{
+		Count:    len(out),
+		Scanned:  scanned,
+		Events:   out,
+		NextStep: "Call list_event_offers with a sport and one or more event_ids to see priced bet types.",
+	}
+	if more {
+		res.NextAfter = magicmarkets.EventCursor(last)
+	}
+	return nil, res, nil
+}
+
+// eventMatches reports whether any display field of e contains needle, which
+// must already be lowercased.
+func eventMatches(e magicmarkets.StreamEvent, needle string) bool {
+	fields := []string{e.EventName, e.Home, e.Away, e.CompetitionName, e.CompetitionCountry, e.EventID}
+	for _, t := range e.Teams {
+		fields = append(fields, t.Name)
+	}
+	for _, f := range fields {
+		if strings.Contains(strings.ToLower(f), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) listEventOffers(ctx context.Context, _ *mcp.CallToolRequest, in listEventOffersInput) (*mcp.CallToolResult, listEventOffersResult, error) {
-	if in.Sport == "" || in.EventID == "" {
-		return nil, listEventOffersResult{}, fmt.Errorf("sport and event_id are required")
+	f := in.offerFilter()
+	if in.Sport == "" || len(f.EventID) == 0 {
+		return nil, listEventOffersResult{}, fmt.Errorf("sport and event_id (or event_ids) are required")
 	}
 
-	stream, err := s.dial(ctx)
-	if err != nil {
-		return nil, listEventOffersResult{}, err
-	}
-	defer stream.Close()
-
-	// The register acknowledgement is indistinguishable from the opening
-	// dump unless the snapshot is drained first.
-	if _, err := stream.Snapshot(ctx, s.opts.SnapshotTimeout); err != nil {
-		return nil, listEventOffersResult{}, fmt.Errorf("waiting for initial sync: %w", err)
-	}
-
-	offers, err := stream.CollectOffers(ctx, in.Sport, in.EventID, s.opts.SnapshotTimeout)
+	offers, err := s.client.AllOffers(ctx, f)
 	if err != nil {
 		return nil, listEventOffersResult{}, err
 	}
@@ -512,27 +523,27 @@ func (s *Server) listEventOffers(ctx context.Context, _ *mcp.CallToolRequest, in
 	if limit <= 0 {
 		limit = 100
 	}
+	truncated := len(offers) > limit
+	if truncated {
+		offers = offers[:limit]
+	}
 
 	out := make([]offer, 0, len(offers))
 	for _, o := range offers {
-		if in.MarketType != "" && !strings.EqualFold(o.MarketType, in.MarketType) {
-			continue
-		}
 		out = append(out, offerFromStream(o))
-		if len(out) >= limit {
-			break
-		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].BetType < out[j].BetType
-	})
 
+	next := "Pass a bet_type verbatim to create_betslip, then place_order against the betslip."
+	if truncated {
+		next = "More offers exist than limit allowed: narrow with market_type, bet_types or min_liquidity, or raise limit. " + next
+	}
 	return nil, listEventOffersResult{
-		Sport:    in.Sport,
-		EventID:  in.EventID,
-		Count:    len(out),
-		Offers:   out,
-		NextStep: "Pass a bet_type verbatim to create_betslip, then place_order against the betslip.",
+		Sport:     in.Sport,
+		EventIDs:  f.EventID,
+		Count:     len(out),
+		Truncated: truncated,
+		Offers:    out,
+		NextStep:  next,
 	}, nil
 }
 
@@ -711,6 +722,19 @@ func (s *Server) closeAllOrders(ctx context.Context, _ *mcp.CallToolRequest, in 
 	return nil, closeAllOrdersResult{Result: string(result)}, nil
 }
 
+func (s *Server) closeBetslip(ctx context.Context, _ *mcp.CallToolRequest, in closeBetslipInput) (*mcp.CallToolResult, closeBetslipResult, error) {
+	if in.BetslipID == "" {
+		return nil, closeBetslipResult{}, fmt.Errorf("betslip_id is required")
+	}
+	if err := s.client.CloseBetslip(ctx, in.BetslipID); err != nil {
+		if magicmarkets.HasCode(err, magicmarkets.CodeNotFound) {
+			return nil, closeBetslipResult{}, fmt.Errorf("betslip %s is unknown, expired or already closed", in.BetslipID)
+		}
+		return nil, closeBetslipResult{}, err
+	}
+	return nil, closeBetslipResult{BetslipID: in.BetslipID, Closed: true}, nil
+}
+
 func (s *Server) createHeartbeat(ctx context.Context, _ *mcp.CallToolRequest, in createHeartbeatInput) (*mcp.CallToolResult, heartbeat, error) {
 	hb, err := s.client.CreateHeartbeat(ctx, int(in.Timeout))
 	if err != nil {
@@ -794,11 +818,6 @@ func listRegisteredTools(m *mcp.Server) ([]*mcp.Tool, error) {
 		tools = append(tools, t)
 	}
 	return tools, nil
-}
-
-// dial opens a stream connection for the discovery tools.
-func (s *Server) dial(ctx context.Context) (*magicmarkets.Stream, error) {
-	return s.client.DialStream(ctx, s.cfg.WSURL, s.cfg.Lang)
 }
 
 // parseCSV splits a comma-separated argument, dropping blanks.

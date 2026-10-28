@@ -106,18 +106,18 @@ func TestCredentialApplyToBearerResolvesViaFirebaseTokenExchange(t *testing.T) {
 		})
 	}))
 	t.Cleanup(ts.Close)
-	identity := stubIdentityToolkit(t, "me-id-token")
+	identity := stubIdentityToolkit(t, validIDToken)
 
 	resolver := NewMeResolver(ts.URL, "5", "web-api-key", identityToolkitClient(t, identity.URL))
 	h := make(http.Header)
 	if err := (Credential{Bearer: token}).ApplyTo(context.Background(), h, resolver); err != nil {
 		t.Fatalf("ApplyTo: %v", err)
 	}
-	if got := h.Get(MagicMetadataJWTHeader); got != "me-id-token" {
-		t.Errorf("magic-metadata-jwt = %q, want me-id-token", got)
+	if got := h.Get(MagicMetadataJWTHeader); got != validIDToken {
+		t.Errorf("magic-metadata-jwt = %q, want the redeemed ID token", got)
 	}
-	if got := h.Get(SessionHeader); got != "m-5-user-uuid" {
-		t.Errorf("session = %q, want m-5-user-uuid", got)
+	if got := h.Get(SessionHeader); got != validSession("5") {
+		t.Errorf("session = %q, want %s", got, validSession("5"))
 	}
 	if got := h.Get(APIKeyHeader); got != "" {
 		t.Errorf("X-Api-Key = %q, want empty when using a bearer token", got)

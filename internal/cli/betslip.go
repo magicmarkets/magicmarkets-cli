@@ -28,6 +28,7 @@ place an order against it.`,
 		a.newBetslipGetCmd(),
 		a.newBetslipListCmd(),
 		a.newBetslipRefreshCmd(),
+		a.newBetslipCloseCmd(),
 	)
 	return cmd
 }
@@ -283,6 +284,30 @@ func (a *App) newBetslipRefreshCmd() *cobra.Command {
 				return a.printer.Emit(bs)
 			}
 			return a.renderBetslip(bs)
+		},
+	}
+}
+
+func (a *App) newBetslipCloseCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "close <betslip-id>",
+		Short: "Close a betslip you no longer need",
+		Long: `Close an open betslip. Its quotes stop and it no longer counts toward the
+open-betslip cap. Closing a betslip commits nothing and cancels no orders.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := a.Client()
+			if err != nil {
+				return err
+			}
+			if err := client.CloseBetslip(ctx(cmd), args[0]); err != nil {
+				return err
+			}
+			if a.printer.JSON {
+				return a.printer.Emit(map[string]any{"betslip_id": args[0], "closed": true})
+			}
+			a.printer.Printf("Closed betslip %s.\n", args[0])
+			return nil
 		},
 	}
 }

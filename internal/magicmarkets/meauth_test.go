@@ -11,14 +11,29 @@ import (
 	"testing"
 )
 
-// fakeAccessToken builds a JWT-shaped string carrying only a "sub" claim in its (unsigned,
-// unverified-by-this-package) payload — enough for subjectFromAccessToken to read it. The
-// resolver never verifies the signature client-side; that happens server-side, in the
-// firebase-token exchange call this resolver makes.
+// fakeAccessToken builds a JWT-shaped string carrying only a "sub" claim in its (unsigned)
+// payload. The resolver never reads or verifies it client-side; that happens server-side, in
+// the firebase-token exchange call this resolver makes.
 func fakeAccessToken(sub string) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"` + sub + `"}`))
 	return header + "." + payload + ".sig"
+}
+
+// fakeIDToken builds a JWT-shaped Firebase ID token whose (unsigned) payload is claimsJSON.
+func fakeIDToken(claimsJSON string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	return header + "." + base64.RawURLEncoding.EncodeToString([]byte(claimsJSON)) + ".sig"
+}
+
+// validIDToken carries the claims the API's magic-customer checks and session-id binding
+// require, so it passes [checkMagicClaims]. The session it resolves to is validSession(group).
+var validIDToken = fakeIDToken(`{"uuid":"0b6f1c9e-3a52-4d0c-9b7e-2f7a1c3d4e5f","tenant":"magicmarkets","ccy_code":"USDT","iat":1761600000}`)
+
+// validSession is the session validIDToken resolves to under group: the API requires
+// m-<group>-<jwt uuid>-<jwt iat>.
+func validSession(group string) string {
+	return "m-" + group + "-0b6f1c9e-3a52-4d0c-9b7e-2f7a1c3d4e5f-1761600000"
 }
 
 type hostRedirectTransport struct {
@@ -68,7 +83,7 @@ func TestMeResolverCachesByAccessToken(t *testing.T) {
 		_, _ = w.Write([]byte(`{"firebase_token":"jwt-` + r.Header.Get(AuthorizationHeader) + `"}`))
 	}))
 	t.Cleanup(ts.Close)
-	identity := stubIdentityToolkit(t, "redeemed-id-token")
+	identity := stubIdentityToolkit(t, validIDToken)
 
 	resolver := NewMeResolver(ts.URL, "5", "web-api-key", identityToolkitClient(t, identity.URL))
 	ctx := context.Background()
@@ -97,7 +112,10 @@ func TestMeResolverCachesByAccessToken(t *testing.T) {
 	}
 }
 
-func TestMeResolverSessionUsesGroupIDAndAccessTokenSubject(t *testing.T) {
+// The API rejects a magic session whose id isn't m-<group>-<uuid>-<iat> with the uuid and iat
+// of the magic-metadata-jwt sent alongside it — so both come from the ID token, not the
+// access token.
+func TestMeResolverSessionBindsIDTokenUUIDAndIat(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method = %q, want POST", r.Method)
@@ -109,31 +127,18 @@ func TestMeResolverSessionUsesGroupIDAndAccessTokenSubject(t *testing.T) {
 		_, _ = w.Write([]byte(`{"firebase_token":"the-jwt"}`))
 	}))
 	t.Cleanup(ts.Close)
-	identity := stubIdentityToolkit(t, "redeemed-id-token")
+	identity := stubIdentityToolkit(t, validIDToken)
 
 	resolver := NewMeResolver(ts.URL, "133", "web-api-key", identityToolkitClient(t, identity.URL))
 	cred, err := resolver.Resolve(context.Background(), fakeAccessToken("abcd-1234"))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if cred.JWT != "redeemed-id-token" {
-		t.Errorf("JWT = %q, want redeemed-id-token", cred.JWT)
+	if cred.JWT != validIDToken {
+		t.Errorf("JWT = %q, want the redeemed ID token", cred.JWT)
 	}
-	if cred.Session != "m-133-abcd-1234" {
-		t.Errorf("Session = %q, want m-133-abcd-1234", cred.Session)
-	}
-}
-
-func TestMeResolverRejectsNonJWTAccessToken(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"firebase_token":"the-jwt"}`))
-	}))
-	t.Cleanup(ts.Close)
-
-	resolver := NewMeResolver(ts.URL, "5", "web-api-key", nil)
-	if _, err := resolver.Resolve(context.Background(), "not-a-jwt"); err == nil {
-		t.Fatal("expected an error for an access token with no readable sub claim")
+	if want := validSession("133"); cred.Session != want {
+		t.Errorf("Session = %q, want %s", cred.Session, want)
 	}
 }
 
@@ -270,5 +275,76 @@ func TestRedeemCustomTokenRejectsMissingIDToken(t *testing.T) {
 	_, err := redeemCustomToken(context.Background(), http.DefaultClient, identity.URL, "custom-tok")
 	if err == nil {
 		t.Fatal("expected an error for a signInWithCustomToken response missing idToken")
+	}
+}
+
+// The API rejects a magic session whose ID token lacks the claims it requires of a magic
+// customer, and magic-api reports that as a bare "Authentication credentials were not
+// provided." The resolver must catch it first and say which claim is wrong.
+func TestMeResolverRejectsIDTokenWithoutMagicClaims(t *testing.T) {
+	const uuid = `"uuid":"0b6f1c9e-3a52-4d0c-9b7e-2f7a1c3d4e5f"`
+	const iat = `"iat":1761600000`
+	cases := []struct {
+		name    string
+		idToken string
+		want    string
+	}{
+		{"not a JWT", "opaque-token", "not a JWT"},
+		{"missing uuid", fakeIDToken(`{"tenant":"magicmarkets",` + iat + `}`), "uuid"},
+		{"uuid not a UUID", fakeIDToken(`{"uuid":"abc","tenant":"magicmarkets",` + iat + `}`), "uuid"},
+		{"missing tenant", fakeIDToken(`{` + uuid + `,` + iat + `}`), "tenant"},
+		{"wrong tenant", fakeIDToken(`{` + uuid + `,"tenant":"other-tenant",` + iat + `}`), "tenant"},
+		// "magic-market" was the tenant name before the rename; it must now be refused.
+		{"pre-rename tenant", fakeIDToken(`{` + uuid + `,"tenant":"magic-market",` + iat + `}`), "tenant"},
+		{"missing iat", fakeIDToken(`{` + uuid + `,"tenant":"magicmarkets"}`), "iat"},
+		{"non-USDT currency", fakeIDToken(`{` + uuid + `,"tenant":"magicmarkets",` + iat + `,"ccy_code":"EUR"}`), "ccy_code"},
+		{"commission rate set", fakeIDToken(`{` + uuid + `,"tenant":"magicmarkets",` + iat + `,"commission_rate":0.02}`), "commission_rate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"firebase_token":"custom-token"}`))
+			}))
+			t.Cleanup(ts.Close)
+			identity := stubIdentityToolkit(t, tc.idToken)
+			resolver := NewMeResolver(ts.URL, "1", "web-api-key", identityToolkitClient(t, identity.URL))
+
+			tok := fakeAccessToken("abcd-1234")
+			_, err := resolver.Resolve(context.Background(), tok)
+			if err == nil {
+				t.Fatal("Resolve succeeded, want an error for an ID token the API would reject")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to name %q", err, tc.want)
+			}
+			// A rejected credential must not be cached.
+			if _, err := resolver.Resolve(context.Background(), tok); err == nil || calls != 2 {
+				t.Errorf("second Resolve: err=%v exchange calls=%d, want an error and a fresh exchange", err, calls)
+			}
+		})
+	}
+}
+
+// The API's session-id pattern only matches a lowercase uuid, and it compares against the
+// token's uuid in lowercase too.
+func TestMeResolverSessionLowercasesUUID(t *testing.T) {
+	as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"firebase_token":"the-jwt"}`))
+	}))
+	t.Cleanup(as.Close)
+	identity := stubIdentityToolkit(t, fakeIDToken(
+		`{"uuid":"0B6F1C9E-3A52-4D0C-9B7E-2F7A1C3D4E5F","tenant":"magicmarkets","iat":1761600000}`))
+
+	resolver := NewMeResolver(as.URL, "2", "web-api-key", identityToolkitClient(t, identity.URL))
+	cred, err := resolver.Resolve(context.Background(), fakeAccessToken("abcd-1234"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := validSession("2"); cred.Session != want {
+		t.Errorf("Session = %q, want %s", cred.Session, want)
 	}
 }

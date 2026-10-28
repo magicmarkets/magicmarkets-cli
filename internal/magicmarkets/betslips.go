@@ -118,6 +118,13 @@ func (c *Client) RefreshBetslip(ctx context.Context, betslipID string) (*Betslip
 	return c.GetBetslip(ctx, betslipID)
 }
 
+// CloseBetslip closes an open betslip: its quotes stop and it no longer counts
+// toward the open-betslip cap. A betslip that is unknown, expired or already
+// closed returns a not_found error.
+func (c *Client) CloseBetslip(ctx context.Context, betslipID string) error {
+	return c.delete(ctx, "/betslips/"+url.PathEscape(betslipID)+"/", nil)
+}
+
 // AwaitQuote polls a betslip until it has at least one price, the betslip
 // closes, or the timeout elapses.
 //

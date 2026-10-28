@@ -432,12 +432,13 @@ category; `code` narrows it down.
 | 400 | `order_closed` | `POST /v2/orders/{id}/close/` on an order that exists but is already closed or settled. Distinct from `not_found`, which means the order id is unknown. |
 | 401 | `auth_error` | API key missing, malformed, or rejected. Also used by login flows for 2FA / inactive / locked accounts. |
 | 403 | `forbidden` | The key is valid but is not allowed to perform this action. |
+| 403 | `invalid_customer` | Market data: the feed has no record of your account. Contact support; a retry gets the same answer. |
 | 404 | `not_found` | The addressed resource (betslip, order, heartbeat, token, session) does not exist or is not visible to this key. |
 | 409 | `order_already_created` | A `request_uuid` from `POST /v2/orders/` was reused. `data` includes the existing `order_id`. |
 | 409 | `limit_reached` | A per-customer cap was hit (e.g. maximum API tokens). `data.detail` describes the cap. |
 | 429 | `throttled` | Rate limit hit - see **Rate limiting** below. `data` is `{ "message": "...", "retry_after": <seconds> }` and a `Retry-After` header is sent. |
 | 500 | `server_error` | Unexpected internal error. `data` is `["An error has occurred, token:", "<token>"]`; quote the token if you contact support. |
-| 503 | (no body envelope) | magic-api could not reach the upstream - body is `{ "detail": "Service unavailable" }`. |
+| 503 | `warming` or no envelope | `warming` (market data): the feed is loading its market data or customer records, which clears by itself, so retry with backoff. No envelope (any endpoint): an upstream service could not be reached, and the body is `{ "detail": "Service unavailable" }`; retry with backoff. |
 
 For `validation_error` responses, branch on the inner reason - the
 keys of `data.validation_errors` (`non_field_errors` for cross-field
@@ -447,22 +448,37 @@ documents the concrete codes it emits next to its 400 response.
 ## Rate limiting
 
 Limits are per **account**: all of an account's API keys draw from
-one budget. The window is sliding - capacity frees up as earlier
-requests age out, with no calendar-aligned reset.
+one budget. Each limit is a token bucket that refills continuously
+at its own rate, so capacity returns steadily rather than in one
+reset, and an account that has been idle can spend a full bucket in
+a single burst.
 
 | Applies to | Limit |
 |------------|-------|
 | All endpoints | 100 requests/second burst, 1200 requests/minute sustained |
-| `POST /v2/betslips/` | 10 requests/second |
-| `POST /v2/orders/` | 10 requests/second |
+| `POST /v2/betslips/` | 10 requests/second, and 2000 betslips/day |
+| `POST /v2/orders/` | 5 requests/second |
+| `GET /v2/offers/` | 4 requests in flight at once |
 
 The placement rows are dedicated budgets: a `POST /v2/betslips/` or
 `POST /v2/orders/` call counts only against its own limit, not the
-general one. There are no daily caps, and these are the only rate
-limits - no separate per-IP limit applies.
+general one. Polling market data therefore never throttles order
+placement. Every other endpoint, market data included, shares the
+general budget, so a busy poller leaves less of it for other GETs.
 
-A rejected request gets a `429` `throttled` error with the wait in
-`Retry-After` and `data.retry_after` (integer seconds).
+Budgets are keyed on the account, not the source address, so
+spreading an integration across several hosts does not multiply it.
+
+A rejected request returns a `429` `throttled` error with the wait
+in `Retry-After` and `data.retry_after` (integer seconds).
+
+The `GET /v2/offers/` row counts open requests: an account can have 4
+of them in flight at once, because each one prices every event it names.
+A call can name up to 20 events at the same cost against the cap, so one
+call naming 20 events beats 20 calls naming one. A request over the cap
+gets the `throttled` envelope. Retry when one of your open requests
+returns; `retry_after` is a fixed 1 second, because the server cannot
+know when your open requests will finish.
 
 The WebSocket stream has no message-rate limit; its connection-level
 limits (registered-event cap, slow-reader disconnect) are documented
@@ -482,8 +498,8 @@ always returned in **USDT**:
 
 ## Price ticks
 
-All prices lie on a fixed tick schedule. The tick (the smallest step
-between two valid prices) widens as the decimal price grows:
+Single-market prices lie on a fixed tick schedule. The tick (the smallest
+step between two valid prices) widens as the decimal price grows:
 
 | Price (cents) | Decimal price | Tick |
 |---------------|---------------|------|
@@ -505,17 +521,27 @@ value.
 
 ### Order prices
 
-A price you submit on an order is snapped onto this schedule. An off-tick
-price is rounded to the nearest valid tick that does not tighten your
-limit: **down** for back (`for`) orders, **up** for lay (`against`)
-orders. The snapped price is the one the order runs with and the one
-reported back in the order response.
+The price you submit on an order is a limit. A bet is taken only at your
+price or better: better means higher for a back (`for`) order and lower for
+a lay (`against`) one.
+
+An off-tick limit moves to the first tick that honours it, never to one
+that does not. The market carries only ticks, so that tick is the cheapest
+price that satisfies the limit you named. A back limit of 7.15 becomes 7.20
+and is not filled at 7.00. The moved price is the one the order runs with,
+and the one the order response reports.
 
 ### Feed prices
 
-Every price delivered on the stream (`price_list`, offers, pmms) is
-already on the schedule, so a price quoted straight from the feed is
-always valid and is never re-rounded.
+Every single-market price delivered on the stream (`price_list`, offers,
+pmms) is already on the schedule, so a price quoted straight from the feed
+is always a valid limit.
+
+### Accumulator prices
+
+An accumulator price is the product of its legs' prices, so it lies on no
+tick schedule. Accumulator prices are quoted, and accepted as limits, at
+full precision, up to the ceiling of 1000 that every quoted price shares.
 
 ## Sports & bet types
 
@@ -773,6 +799,7 @@ All paths also work behind the `/magic-api` ingress prefix
 | GET | [/v2/betslips/](#getv2betslips) | List betslips |
 | POST | [/v2/betslips/](#postv2betslips) | Create betslip |
 | GET | [/v2/betslips/{betslip_id}/](#getv2betslipsbetslip_id) | Get betslip |
+| DELETE | [/v2/betslips/{betslip_id}/](#deletev2betslipsbetslip_id) | Close betslip |
 | POST | [/v2/betslips/{betslip_id}/refresh/](#postv2betslipsbetslip_idrefresh) | Refresh betslip |
 | GET | [/v2/orders/](#getv2orders) | List orders |
 | POST | [/v2/orders/](#postv2orders) | Create order |
@@ -791,6 +818,8 @@ All paths also work behind the `/magic-api` ingress prefix
 | POST | [/v2/heartbeats/{heartbeat_id}/refresh/](#postv2heartbeatsheartbeat_idrefresh) | Refresh heartbeat |
 | GET | [/v2/xrates/](#getv2xrates) | Exchange rates |
 | GET | [/v2/sports/{sport}/bet_types/{bet_type}/](#getv2sportssportbet_typesbet_type) | Bet type info |
+| GET | [/v2/events/](#getv2events) | List events |
+| GET | [/v2/offers/](#getv2offers) | List offers for an event |
 | GET | [/v2/stream](#getv2stream) | WebSocket stream |
 
 ## Reference Table
@@ -801,13 +830,22 @@ All paths also work behind the `/magic-api` ingress prefix
 | Error400 | [#/components/responses/Error400](#componentsresponseserror400) | Validation failed - see `data.validation_errors`. |
 | Error401 | [#/components/responses/Error401](#componentsresponseserror401) | Authentication failed - API key missing, malformed, or rejected. |
 | Error403 | [#/components/responses/Error403](#componentsresponseserror403) | Authorization failed - the key is valid but cannot perform this action. |
+| Error403Feed | [#/components/responses/Error403Feed](#componentsresponseserror403feed) | `invalid_customer`: the feed has no record of your account; contact support, because a retry gets the same answer. `forbidden`: the key is valid but cannot perform this action. |
 | Error404 | [#/components/responses/Error404](#componentsresponseserror404) | Resource not found or not visible to this key. |
 | Error429 | [#/components/responses/Error429](#componentsresponseserror429) | Rate limit hit. Honour the `Retry-After` header. |
+| Error503Feed | [#/components/responses/Error503Feed](#componentsresponseserror503feed) | `warming`: the feed is loading its market data or customer records; retry with backoff. A body of `{ "detail": "Service unavailable" }` without the envelope means an upstream service could not be reached; retry with backoff. |
 | Error500 | [#/components/responses/Error500](#componentsresponseserror500) | Unexpected internal error. Quote `data[1]` (the token) when contacting support. |
 | StakeTuple | [#/components/schemas/StakeTuple](#componentsschemasstaketuple) | [currency, amount] - e.g. ["USDT", 115.38] |
 | LiveScore | [#/components/schemas/LiveScore](#componentsschemaslivescore) | In-running score at a point in time, `{home, away}`. |
 | ErrorEnvelope | [#/components/schemas/ErrorEnvelope](#componentsschemaserrorenvelope) | Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses. |
+| Event | [#/components/schemas/Event](#componentsschemasevent) | An event that currently has prices, identical to the stream's `event` payload. `event_type` gives the shape: `normal` has `home` and `away`, `multirunner` has `teams` and `end_time`. |
+| EventList | [#/components/schemas/EventList](#componentsschemaseventlist) | Events that currently have prices. |
+| EventListEnvelope | [#/components/schemas/EventListEnvelope](#componentsschemaseventlistenvelope) |  |
+| Offer | [#/components/schemas/Offer](#componentsschemasoffer) | The stake available at each price for one market, identical to the stream's `offer` payload. |
+| OfferList | [#/components/schemas/OfferList](#componentsschemasofferlist) | One entry per market. |
+| OfferListEnvelope | [#/components/schemas/OfferListEnvelope](#componentsschemasofferlistenvelope) |  |
 | PriceLevel | [#/components/schemas/PriceLevel](#componentsschemaspricelevel) |  |
+| PriceLevelList | [#/components/schemas/PriceLevelList](#componentsschemaspricelevellist) | Prices sorted descending (best price first). |
 | BetslipCreateResponse | [#/components/schemas/BetslipCreateResponse](#componentsschemasbetslipcreateresponse) | Create (POST) response; carries no prices. Poll GET or watch the stream for the quote. |
 | BetslipResponse | [#/components/schemas/BetslipResponse](#componentsschemasbetslipresponse) |  |
 | BetslipCreateEnvelope | [#/components/schemas/BetslipCreateEnvelope](#componentsschemasbetslipcreateenvelope) |  |
@@ -1474,6 +1512,43 @@ Returns a single betslip with prices and stakes in USDT. `price_list` may be emp
 
 ***
 
+### [DELETE]/v2/betslips/{betslip_id}/
+
+- Summary  
+Close betslip
+
+- Description  
+Close an open betslip. Its quotes stop, and it no longer counts toward the open-betslip cap.
+
+#### Responses
+
+- 200 Betslip closed
+
+`application/json`
+
+- 401 undefined
+
+- 403 undefined
+
+- 404 Betslip not found, expired, or already closed
+
+`application/json`
+
+```typescript
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+{
+  status: enum[error]
+  // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
+  code: string
+}
+```
+
+- 429 undefined
+
+- 500 undefined
+
+***
+
 ### [POST]/v2/betslips/{betslip_id}/refresh/
 
 - Summary  
@@ -1644,7 +1719,7 @@ Places a new order on an existing betslip.
 ```typescript
 {
   betslip_id: string
-  // Desired decimal price. Off-tick prices are rounded down for back (`for`) orders and up for lay (`against`) orders; see "Price ticks".
+  // Limit decimal price. A bet is taken only at this price or better, and an off-tick limit moves to the first tick that honours it; see "Price ticks".
   price: number
   // #/components/schemas/StakeTuple
   stake?: string | number[]
@@ -2444,7 +2519,7 @@ Returns the authenticated user's current balance, total stake on open bets, and 
     // #/components/schemas/StakeTuple
     balance?: string | number[]
     open_stake:#/components/schemas/StakeTuple
-    // Smart credit, or null when the account has none
+    // Extra funds available for betting on top of the balance, equal to the amount the account is expected to win from the bets already placed. Null when the account has no smart credit.
     smart_credit: #/components/schemas/StakeTuple | null
   }
 }
@@ -2839,6 +2914,342 @@ away_team?: string
 
 ***
 
+### [GET]/v2/events/
+
+- Summary  
+List events
+
+- Description  
+Lists the events that currently have prices. Each entry is the object the stream sends as `["event", {...}]`.  
+  
+For price-sensitive work, use the streaming API: it pushes each change as it happens.  
+  
+`ir_status` keeps the events in running (`in_running`) or not yet started (`pre_event`), the same values each event carries.  
+  
+`event_type` gives the shape. A `normal` (match) event has `home` and `away`. A `multirunner` (outright) event has `teams` and `end_time`.  
+  
+Page with `limit` and `after`: pass the previous page's last `"{sport},{event_id}"` as `after`. A page shorter than `limit` is the last one. The response has no total count.  
+  
+`event_id` and `competition_id` filters need `sport`; a request without it gets a 400. Every entry has its `sport`, so a follow-up call can always supply it. Paging without filters needs no `sport`.  
+  
+A filter that matches no event returns an empty `data`. This includes a sport, competition or event that has no prices at the moment. Each `event_id` must have the form an event carries, such as `2026-06-15,1001,2002`; any other form gets a 400.
+
+#### Parameters(Query)
+
+```typescript
+sport?: string[]
+```
+
+```typescript
+competition_id?: integer[]
+```
+
+```typescript
+event_id?: string[]
+```
+
+```typescript
+lang?: enum[en, zh-hans, ko] //default: en
+```
+
+```typescript
+limit?: integer //default: 500
+```
+
+```typescript
+after?: string
+```
+
+```typescript
+start_time_from?: string
+```
+
+```typescript
+start_time_to?: string
+```
+
+```typescript
+ir_status?: enum[pre_event, in_running]
+```
+
+#### Responses
+
+- 200 Events with prices
+
+`application/json`
+
+```typescript
+{
+  status?: enum[ok]
+  // #/components/schemas/EventList
+  // An event that currently has prices, identical to the stream's `event` payload. `event_type` gives the shape: `normal` has `home` and `away`, `multirunner` has `teams` and `end_time`.
+  data: {
+    event_type?: enum[normal, multirunner]
+    // Sport code
+    sport?: string
+    event_id?: string
+    competition_id?: integer
+    competition_name?: string
+    // Country code of the competition, for example `US`, or `XE` for England.
+    competition_country?: string
+    // Normal events only
+    home?: string | null
+    // Normal events only
+    away?: string | null
+    // Runner list (multirunner events only)
+    teams?: {
+       team_id?: integer
+       name?: string
+     }[] | null
+    // Race end time (multirunner events only)
+    end_time?: string | null
+    event_name?: string | null
+    ir_status?: enum[pre_event, in_running]
+    start_time?: string | null
+  }[]
+}
+```
+
+- Examples
+
+  - normal
+
+```json
+{
+  "summary": "Match event",
+  "value": {
+    "status": "ok",
+    "data": [
+      {
+        "event_type": "normal",
+        "sport": "fb",
+        "event_id": "2026-06-15,1001,2002",
+        "competition_id": 1,
+        "competition_name": "England Premier League",
+        "competition_country": "XE",
+        "home": "Arsenal",
+        "away": "Chelsea",
+        "event_name": "Arsenal vs. Chelsea",
+        "ir_status": "pre_event",
+        "start_time": "2026-06-15T15:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+  - multirunner
+
+```json
+{
+  "summary": "Outright event",
+  "value": {
+    "status": "ok",
+    "data": [
+      {
+        "event_type": "multirunner",
+        "sport": "af",
+        "event_id": "2026-02-23,multirunner,100364405",
+        "competition_id": 545,
+        "competition_name": "USA NFL",
+        "competition_country": "US",
+        "teams": [
+          {
+            "team_id": 21614,
+            "name": "Arizona Cardinals"
+          },
+          {
+            "team_id": 21615,
+            "name": "Atlanta Falcons"
+          }
+        ],
+        "event_name": "NFL Super Bowl Winner",
+        "ir_status": "pre_event",
+        "start_time": "2026-02-23T21:00:00Z",
+        "end_time": "2027-02-14T21:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+- 400 Invalid query parameter.
+
+`application/json`
+
+```typescript
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+{
+  status: enum[error]
+  // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
+  code: string
+}
+```
+
+- 401 undefined
+
+- 403 undefined
+
+- 429 undefined
+
+- 500 undefined
+
+- 503 undefined
+
+***
+
+### [GET]/v2/offers/
+
+- Summary  
+List offers for an event
+
+- Description  
+Returns the stake available at each price, for each market on the named events. Each entry is the object the stream sends as `["offer", {...}]`.  
+  
+A reply can be about 4 seconds behind the live prices: the stream updates every 2 seconds, and a client may cache the response for 2 seconds (`Cache-Control: private, max-age=2`). For live prices, register the event on the stream with `register_event`.  
+  
+`sport` and `event_id` are required, with up to 20 events per request. `GET /v2/events/` lists them.  
+  
+`bet_type` limits the response to the named markets. It takes the same strings as `POST /v2/betslips/`, so a `bet_type` from here goes into a betslip unchanged.  
+  
+`market_type` keeps the named market families, such as `ah`, `ou` or `wdw`. `min_liquidity` keeps a market when its `max` stakes, added up across its `price_list`, come to at least that many USDT.  
+  
+Offers come back in `event_id` order, then `bet_type` order. Page with `limit` and `after`: pass the previous page's last `"{event_id},{bet_type}"` as `after`. A page shorter than `limit` is the last one. Each page is read when it is requested, so for a consistent view of an event, use the stream.  
+  
+Markets with no available stake are left out. `for` and `against` on one selection are two markets, each with its own `bet_type`. For a sport your account is not enabled for, the list is empty, as on the stream.  
+  
+An event that has no prices at the moment, or that the feed does not know, returns no offers. The other events in the request still come back. Each `event_id` must have the form an event carries, such as `2026-06-15,1001,2002`; any other form gets a 400.
+
+#### Parameters(Query)
+
+```typescript
+sport: string
+```
+
+```typescript
+event_id?: string[]
+```
+
+```typescript
+bet_type?: string[]
+```
+
+```typescript
+market_type?: string[]
+```
+
+```typescript
+min_liquidity?: number
+```
+
+```typescript
+limit?: integer //default: 500
+```
+
+```typescript
+after?: string
+```
+
+#### Responses
+
+- 200 Offers for the named events
+
+`application/json`
+
+```typescript
+{
+  status?: enum[ok]
+  // #/components/schemas/OfferList
+  // The stake available at each price for one market, identical to the stream's `offer` payload.
+  data: {
+    sport?: string
+    event_id?: string
+    // The market and side: market type, line, outcome and `for` or `against`. `POST /v2/betslips/` accepts it as is.
+    bet_type?: string
+    // Market family the bet type belongs to (e.g. `ah`, `wdw`, `ou`).
+    market_type?: string
+    // Whether the event was in running when this offer was priced.
+    in_running?: boolean
+    // #/components/schemas/PriceLevelList
+    price_list: {
+      effective: {
+        // Decimal price
+        price?: number
+        // Minimum stake at this price level, or null
+        min?: #/components/schemas/StakeTuple | null
+        // Maximum stake at this price level, or null
+        max?: #/components/schemas/StakeTuple | null
+      }
+    }[]
+  }[]
+}
+```
+
+- 400 Missing or invalid query parameter.
+
+`application/json`
+
+```typescript
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+{
+  status: enum[error]
+  // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
+  code: string
+}
+```
+
+- Examples
+
+  - missing_event
+
+```json
+{
+  "summary": "event_id omitted",
+  "value": {
+    "status": "error",
+    "code": "validation_error",
+    "data": {
+      "validation_errors": {
+        "event_id": [
+          "Field required"
+        ]
+      }
+    }
+  }
+}
+```
+
+  - too_many_events
+
+```json
+{
+  "summary": "More than 20 events requested",
+  "value": {
+    "status": "error",
+    "code": "validation_error",
+    "data": {
+      "validation_errors": {
+        "event_id": [
+          "List should have at most 20 items after validation, not 21"
+        ]
+      }
+    }
+  }
+}
+```
+
+- 401 undefined
+
+- 403 undefined
+
+- 429 undefined
+
+- 500 undefined
+
+- 503 undefined
+
+***
+
 ### [GET]/v2/stream
 
 - Summary  
@@ -3054,7 +3465,7 @@ messages.
   
 ```json  
 {"ts": 1586042815.269000, "data": [  
-  ["balance", {"balance": ["EUR", 10000.1], "open_stake": ["EUR", 152.55]}],  
+  ["balance", {"balance": ["EUR", 10000.1], "open_stake": ["EUR", 152.55], "smart_credit": ["EUR", 300.0]}],  
   ["xrate", {"ccy": "EUR", "rate": 1.1347}],  
   ["order", {...}],  
   ["bet", {...}],  
@@ -3095,6 +3506,9 @@ only. Dispatch on each entry's type tag.
 **`balance` message fields:**  
 - `balance`: `[currency, amount]` - current account balance in the customer's native currency.  
 - `open_stake`: `[currency, amount]` - total stake across all unsettled bets, in the same currency.  
+- `smart_credit`: `[currency, amount]` - extra funds available for betting on  
+  top of the balance, equal to the amount the account is expected to win from  
+  the bets already placed. Absent when the account has no smart credit.  
   
 ### Errors  
   
@@ -3226,6 +3640,19 @@ lang?: enum[en, ko, zh-hans] //default: en
 }
 ```
 
+### #/components/responses/Error403Feed
+
+- application/json
+
+```typescript
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+{
+  status: enum[error]
+  // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
+  code: string
+}
+```
+
 ### #/components/responses/Error404
 
 - application/json
@@ -3240,6 +3667,19 @@ lang?: enum[en, ko, zh-hans] //default: en
 ```
 
 ### #/components/responses/Error429
+
+- application/json
+
+```typescript
+// Standard error response. The shape of `data` varies by `code` - see the **Errors** section in the introduction and the named examples on each endpoint's error responses.
+{
+  status: enum[error]
+  // Stable machine-readable error code (e.g. `validation_error`, `not_found`, `forbidden`).
+  code: string
+}
+```
+
+### #/components/responses/Error503Feed
 
 - application/json
 
@@ -3294,6 +3734,185 @@ string | number[]
 }
 ```
 
+### #/components/schemas/Event
+
+```typescript
+// An event that currently has prices, identical to the stream's `event` payload. `event_type` gives the shape: `normal` has `home` and `away`, `multirunner` has `teams` and `end_time`.
+{
+  event_type?: enum[normal, multirunner]
+  // Sport code
+  sport?: string
+  event_id?: string
+  competition_id?: integer
+  competition_name?: string
+  // Country code of the competition, for example `US`, or `XE` for England.
+  competition_country?: string
+  // Normal events only
+  home?: string | null
+  // Normal events only
+  away?: string | null
+  // Runner list (multirunner events only)
+  teams?: {
+     team_id?: integer
+     name?: string
+   }[] | null
+  // Race end time (multirunner events only)
+  end_time?: string | null
+  event_name?: string | null
+  ir_status?: enum[pre_event, in_running]
+  start_time?: string | null
+}
+```
+
+### #/components/schemas/EventList
+
+```typescript
+// An event that currently has prices, identical to the stream's `event` payload. `event_type` gives the shape: `normal` has `home` and `away`, `multirunner` has `teams` and `end_time`.
+{
+  event_type?: enum[normal, multirunner]
+  // Sport code
+  sport?: string
+  event_id?: string
+  competition_id?: integer
+  competition_name?: string
+  // Country code of the competition, for example `US`, or `XE` for England.
+  competition_country?: string
+  // Normal events only
+  home?: string | null
+  // Normal events only
+  away?: string | null
+  // Runner list (multirunner events only)
+  teams?: {
+     team_id?: integer
+     name?: string
+   }[] | null
+  // Race end time (multirunner events only)
+  end_time?: string | null
+  event_name?: string | null
+  ir_status?: enum[pre_event, in_running]
+  start_time?: string | null
+}[]
+```
+
+### #/components/schemas/EventListEnvelope
+
+```typescript
+{
+  status?: enum[ok]
+  // #/components/schemas/EventList
+  // An event that currently has prices, identical to the stream's `event` payload. `event_type` gives the shape: `normal` has `home` and `away`, `multirunner` has `teams` and `end_time`.
+  data: {
+    event_type?: enum[normal, multirunner]
+    // Sport code
+    sport?: string
+    event_id?: string
+    competition_id?: integer
+    competition_name?: string
+    // Country code of the competition, for example `US`, or `XE` for England.
+    competition_country?: string
+    // Normal events only
+    home?: string | null
+    // Normal events only
+    away?: string | null
+    // Runner list (multirunner events only)
+    teams?: {
+       team_id?: integer
+       name?: string
+     }[] | null
+    // Race end time (multirunner events only)
+    end_time?: string | null
+    event_name?: string | null
+    ir_status?: enum[pre_event, in_running]
+    start_time?: string | null
+  }[]
+}
+```
+
+### #/components/schemas/Offer
+
+```typescript
+// The stake available at each price for one market, identical to the stream's `offer` payload.
+{
+  sport?: string
+  event_id?: string
+  // The market and side: market type, line, outcome and `for` or `against`. `POST /v2/betslips/` accepts it as is.
+  bet_type?: string
+  // Market family the bet type belongs to (e.g. `ah`, `wdw`, `ou`).
+  market_type?: string
+  // Whether the event was in running when this offer was priced.
+  in_running?: boolean
+  // #/components/schemas/PriceLevelList
+  price_list: {
+    effective: {
+      // Decimal price
+      price?: number
+      // Minimum stake at this price level, or null
+      min?: #/components/schemas/StakeTuple | null
+      // Maximum stake at this price level, or null
+      max?: #/components/schemas/StakeTuple | null
+    }
+  }[]
+}
+```
+
+### #/components/schemas/OfferList
+
+```typescript
+// The stake available at each price for one market, identical to the stream's `offer` payload.
+{
+  sport?: string
+  event_id?: string
+  // The market and side: market type, line, outcome and `for` or `against`. `POST /v2/betslips/` accepts it as is.
+  bet_type?: string
+  // Market family the bet type belongs to (e.g. `ah`, `wdw`, `ou`).
+  market_type?: string
+  // Whether the event was in running when this offer was priced.
+  in_running?: boolean
+  // #/components/schemas/PriceLevelList
+  price_list: {
+    effective: {
+      // Decimal price
+      price?: number
+      // Minimum stake at this price level, or null
+      min?: #/components/schemas/StakeTuple | null
+      // Maximum stake at this price level, or null
+      max?: #/components/schemas/StakeTuple | null
+    }
+  }[]
+}[]
+```
+
+### #/components/schemas/OfferListEnvelope
+
+```typescript
+{
+  status?: enum[ok]
+  // #/components/schemas/OfferList
+  // The stake available at each price for one market, identical to the stream's `offer` payload.
+  data: {
+    sport?: string
+    event_id?: string
+    // The market and side: market type, line, outcome and `for` or `against`. `POST /v2/betslips/` accepts it as is.
+    bet_type?: string
+    // Market family the bet type belongs to (e.g. `ah`, `wdw`, `ou`).
+    market_type?: string
+    // Whether the event was in running when this offer was priced.
+    in_running?: boolean
+    // #/components/schemas/PriceLevelList
+    price_list: {
+      effective: {
+        // Decimal price
+        price?: number
+        // Minimum stake at this price level, or null
+        min?: #/components/schemas/StakeTuple | null
+        // Maximum stake at this price level, or null
+        max?: #/components/schemas/StakeTuple | null
+      }
+    }[]
+  }[]
+}
+```
+
 ### #/components/schemas/PriceLevel
 
 ```typescript
@@ -3307,6 +3926,21 @@ string | number[]
     max?: #/components/schemas/StakeTuple | null
   }
 }
+```
+
+### #/components/schemas/PriceLevelList
+
+```typescript
+{
+  effective: {
+    // Decimal price
+    price?: number
+    // Minimum stake at this price level, or null
+    min?: #/components/schemas/StakeTuple | null
+    // Maximum stake at this price level, or null
+    max?: #/components/schemas/StakeTuple | null
+  }
+}[]
 ```
 
 ### #/components/schemas/BetslipCreateResponse
@@ -3859,7 +4493,7 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
 ```typescript
 {
   betslip_id: string
-  // Desired decimal price. Off-tick prices are rounded down for back (`for`) orders and up for lay (`against`) orders; see "Price ticks".
+  // Limit decimal price. A bet is taken only at this price or better, and an off-tick limit moves to the first tick that honours it; see "Price ticks".
   price: number
   // #/components/schemas/StakeTuple
   stake?: string | number[]
@@ -3896,7 +4530,7 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
   // #/components/schemas/StakeTuple
   balance?: string | number[]
   open_stake:#/components/schemas/StakeTuple
-  // Smart credit, or null when the account has none
+  // Extra funds available for betting on top of the balance, equal to the amount the account is expected to win from the bets already placed. Null when the account has no smart credit.
   smart_credit: #/components/schemas/StakeTuple | null
 }
 ```
@@ -3910,7 +4544,7 @@ undefined?: #/components/schemas/BetslipCreateResponse & {
     // #/components/schemas/StakeTuple
     balance?: string | number[]
     open_stake:#/components/schemas/StakeTuple
-    // Smart credit, or null when the account has none
+    // Extra funds available for betting on top of the balance, equal to the amount the account is expected to win from the bets already placed. Null when the account has no smart credit.
     smart_credit: #/components/schemas/StakeTuple | null
   }
 }

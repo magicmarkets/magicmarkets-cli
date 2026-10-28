@@ -210,9 +210,8 @@ type validateBetTypeInput struct {
 }
 
 type snapPriceInput struct {
-	Price     float64 `json:"price" jsonschema:"Decimal price, between 1.01 and 1000."`
-	BetType   string  `json:"bet_type,omitempty" jsonschema:"Bet type string; its direction decides the rounding."`
-	Direction string  `json:"direction,omitempty" jsonschema:"'for' (back, rounds down) or 'against' (lay, rounds up). Defaults to 'for'. Ignored when bet_type is given."`
+	Price       float64 `json:"price" jsonschema:"Decimal price, between 1.01 and 1000."`
+	BetslipType string  `json:"betslip_type,omitempty" jsonschema:"Type of the betslip the order is on: 'normal' (default) rounds an off-tick price up, whether the bet type starts with 'for' or 'against'; 'lay' rounds it down; 'parlay' is never snapped, since accumulator prices lie on no tick schedule."`
 }
 
 type listEventsInput struct {
@@ -329,7 +328,7 @@ type validateBetTypeResult struct {
 
 type snapPriceResult struct {
 	Requested    float64 `json:"requested"`
-	Direction    string  `json:"direction"`
+	BetslipType  string  `json:"betslip_type"`
 	Snapped      float64 `json:"snapped"`
 	Tick         float64 `json:"tick"`
 	AlreadyValid bool    `json:"already_valid"`

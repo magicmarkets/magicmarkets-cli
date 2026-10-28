@@ -73,9 +73,11 @@ func (a *App) newOrderPlaceCmd() *cobra.Command {
 This commits real money. The order is summarised and confirmed before it is
 sent, unless --yes is given.
 
-An off-tick price is snapped onto the tick schedule — down for back (for)
-orders, up for lay (against) orders. The summary shows the snapped price, which
-is the one the order runs with.
+An off-tick price is snapped onto the tick schedule the way the server does it,
+so the limit never gets worse than the one asked for: up on a normal betslip
+(7.15 becomes 7.20, for "for" and "against" bet types alike), down on a lay
+betslip (2.31 becomes 2.30). A parlay price lies on no tick schedule and is
+sent as given. The summary shows the price the order runs with.
 
   magicmarkets order place --betslip <id> --price 2.10 --stake 50
   magicmarkets order place --betslip <id> --price 2.10 --stake 50 --yes --watch 20s
@@ -98,8 +100,8 @@ hours.`,
 				return fmt.Errorf("look up betslip %s: %w", betslipID, err)
 			}
 
-			dir := magicmarkets.DirectionOf(bs.BetType)
-			snapped := magicmarkets.SnapPrice(priceFlag, dir)
+			dir := magicmarkets.SnapDirection(bs.BetslipType)
+			snapped := magicmarkets.SnapOrderPrice(priceFlag, bs.BetslipType)
 
 			score, err := parseCurrentScore(currentScore)
 			if err != nil {

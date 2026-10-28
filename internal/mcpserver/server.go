@@ -279,8 +279,10 @@ func (s *Server) register(m *mcp.Server) {
 	addTool(m, "snap_price",
 		"Snap a decimal price onto the API's tick schedule and report the tick size and "+
 			"implied probability. Runs locally with no API call. "+
-			"Off-tick order prices are rounded so they never tighten your limit: down for back ('for') orders, "+
-			"up for lay ('against') orders. Use this to know the price an order will actually run with.",
+			"On a normal betslip an off-tick limit moves up to the next tick (7.15 becomes 7.20), "+
+			"whether the bet type starts with 'for' or 'against'. On a lay betslip it moves down (2.31 becomes 2.30). "+
+			"A parlay price lies on no tick schedule and is left as is. "+
+			"Use this to know the price an order will actually run with.",
 		hints(true, false, true, false), s.snapPrice)
 
 	// Read-only: market discovery over REST.
@@ -337,8 +339,8 @@ func (s *Server) register(m *mcp.Server) {
 		hints(false, false, false, true), s.closeBetslip)
 	addTool(m, "place_order",
 		"Place an order against a betslip. THIS SPENDS REAL MONEY. "+
-			"Requires an existing betslip from create_betslip. The price is snapped onto the tick schedule "+
-			"(down for back, up for lay) and the snapped value is what the order runs with. "+
+			"Requires an existing betslip from create_betslip. An off-tick price is snapped onto the tick schedule "+
+			"(up on a normal betslip, down on a lay betslip, never on a parlay) and the snapped value is what the order runs with. "+
 			"Always pass request_uuid: it makes the call idempotent, so a retry after a timeout cannot create "+
 			"a second order, and get_order can then find it by that uuid. "+
 			"Confirm the stake with the user before calling this.",
@@ -419,22 +421,32 @@ func (s *Server) snapPrice(_ context.Context, _ *mcp.CallToolRequest, in snapPri
 		return nil, snapPriceResult{}, fmt.Errorf("price must be positive")
 	}
 
-	dir := magicmarkets.Back
-	if in.BetType != "" {
-		dir = magicmarkets.DirectionOf(in.BetType)
-	} else if in.Direction == string(magicmarkets.Lay) {
-		dir = magicmarkets.Lay
+	// The betslip type decides the rounding, not the bet type: an "against"
+	// bet type on a normal betslip still rounds up.
+	betslipType := in.BetslipType
+	switch betslipType {
+	case "":
+		betslipType = magicmarkets.BetslipNormal
+	case magicmarkets.BetslipNormal, magicmarkets.BetslipLay, magicmarkets.BetslipParlay:
+	default:
+		return nil, snapPriceResult{}, fmt.Errorf("betslip_type must be normal, lay or parlay, got %q", in.BetslipType)
 	}
 
-	snapped := magicmarkets.SnapPrice(in.Price, dir)
-	return nil, snapPriceResult{
+	snapped := magicmarkets.SnapOrderPrice(in.Price, betslipType)
+	out := snapPriceResult{
 		Requested:    in.Price,
-		Direction:    string(dir),
+		BetslipType:  betslipType,
 		Snapped:      snapped,
-		Tick:         magicmarkets.TickAt(snapped),
 		AlreadyValid: magicmarkets.IsOnTick(in.Price),
 		ImpliedCents: magicmarkets.ImpliedCents(snapped),
-	}, nil
+	}
+	if betslipType == magicmarkets.BetslipParlay {
+		// An accumulator price is valid at full precision.
+		out.AlreadyValid = true
+	} else {
+		out.Tick = magicmarkets.TickAt(snapped)
+	}
+	return nil, out, nil
 }
 
 func (s *Server) listEvents(ctx context.Context, _ *mcp.CallToolRequest, in listEventsInput) (*mcp.CallToolResult, listEventsResult, error) {
@@ -653,14 +665,13 @@ func (s *Server) placeOrder(ctx context.Context, _ *mcp.CallToolRequest, in plac
 		return nil, placeOrderResult{}, fmt.Errorf("betslip_id is required")
 	}
 
-	// Look the betslip up so the price is snapped in the correct direction.
+	// Look the betslip up: its betslip_type decides how the price is snapped.
 	bs, err := s.client.GetBetslip(ctx, in.BetslipID)
 	if err != nil {
 		return nil, placeOrderResult{}, fmt.Errorf("look up betslip %s: %w", in.BetslipID, err)
 	}
 
-	dir := magicmarkets.DirectionOf(bs.BetType)
-	snapped := magicmarkets.SnapPrice(in.Price, dir)
+	snapped := magicmarkets.SnapOrderPrice(in.Price, bs.BetslipType)
 
 	orderReq := in.request(snapped)
 

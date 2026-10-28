@@ -330,13 +330,15 @@ func (a *App) newTicksCmd() *cobra.Command {
 		Long: `Snap a decimal price onto the API's tick schedule.
 
 All prices lie on a fixed schedule whose tick widens as the price grows. An
-off-tick order price is rounded to the nearest valid tick that does not tighten
-your limit: down for back (for) orders, up for lay (against) orders.
+off-tick limit on a normal betslip moves up to the next tick, as the server
+does: 7.15 becomes 7.20. That holds for "for" and "against" bet types alike.
+On a lay betslip (betslip create --lay) the price is a lay price, lower is
+better, and an off-tick limit moves down: 2.31 becomes 2.30.
 
 Use this to see the price an order will actually run with before placing it.
 
-  magicmarkets ticks 2.345          # back order
-  magicmarkets ticks 2.345 --lay    # lay order`,
+  magicmarkets ticks 2.345          # order on a normal betslip
+  magicmarkets ticks 2.345 --lay    # order on a lay betslip`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := strconv.ParseFloat(args[0], 64)
@@ -344,15 +346,15 @@ Use this to see the price an order will actually run with before placing it.
 				return fmt.Errorf("invalid price %q: %w", args[0], err)
 			}
 
-			dir := magicmarkets.Back
+			betslipType := magicmarkets.BetslipNormal
 			if lay {
-				dir = magicmarkets.Lay
+				betslipType = magicmarkets.BetslipLay
 			}
-			snapped := magicmarkets.SnapPrice(p, dir)
+			snapped := magicmarkets.SnapOrderPrice(p, betslipType)
 
 			result := map[string]any{
 				"requested":     p,
-				"direction":     string(dir),
+				"betslip_type":  betslipType,
 				"snapped":       snapped,
 				"tick":          magicmarkets.TickAt(snapped),
 				"on_tick":       magicmarkets.IsOnTick(p),
@@ -364,7 +366,7 @@ Use this to see the price an order will actually run with before placing it.
 
 			return a.printer.KV([][2]string{
 				{"requested", price(p)},
-				{"direction", string(dir)},
+				{"betslip type", betslipType},
 				{"already on tick", strconv.FormatBool(magicmarkets.IsOnTick(p))},
 				{"snapped price", price(snapped)},
 				{"tick at price", strconv.FormatFloat(magicmarkets.TickAt(snapped), 'f', -1, 64)},
@@ -373,6 +375,6 @@ Use this to see the price an order will actually run with before placing it.
 		},
 	}
 
-	cmd.Flags().BoolVar(&lay, "lay", false, "snap as a lay (against) order, rounding up")
+	cmd.Flags().BoolVar(&lay, "lay", false, "snap for an order on a lay betslip, rounding down")
 	return cmd
 }

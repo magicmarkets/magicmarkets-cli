@@ -62,7 +62,7 @@ func TestDialBearerSendsTokenAndJWTQueryViaMe(t *testing.T) {
 		_, _ = io.WriteString(w, `{"firebase_token":"me-jwt"}`)
 	}))
 	t.Cleanup(me.Close)
-	identity := stubIdentityToolkit(t, "me-id-token")
+	identity := stubIdentityToolkit(t, validIDToken)
 	resolver := NewMeResolver(me.URL, "5", "web-api-key", identityToolkitClient(t, identity.URL))
 
 	wsURL, seen := startStreamProbe(t)
@@ -82,11 +82,11 @@ func TestDialBearerSendsTokenAndJWTQueryViaMe(t *testing.T) {
 	if got := h.Header.Get(APIKeyHeader); got != "" {
 		t.Errorf("X-Api-Key = %q, want empty", got)
 	}
-	if !strings.Contains(h.Query, "token=m-5-user-uuid") {
-		t.Errorf("query = %q, want token=m-5-user-uuid", h.Query)
+	if !strings.Contains(h.Query, "token="+validSession("5")) {
+		t.Errorf("query = %q, want token=%s", h.Query, validSession("5"))
 	}
-	if !strings.Contains(h.Query, "jwt=me-id-token") {
-		t.Errorf("query = %q, want jwt=me-id-token", h.Query)
+	if !strings.Contains(h.Query, "jwt="+validIDToken) {
+		t.Errorf("query = %q, want jwt=<the redeemed ID token>", h.Query)
 	}
 	if strings.Contains(h.Query, "api_key=") {
 		t.Errorf("query = %q, Bearer handshake must not send api_key", h.Query)

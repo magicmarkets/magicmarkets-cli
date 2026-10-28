@@ -13,61 +13,84 @@ import (
 
 func (a *App) newMarketsCmd() *cobra.Command {
 	var (
-		sports  []string
-		search  string
-		limit   int
-		timeout time.Duration
-		inPlay  bool
+		sports       []string
+		competitions []int
+		search       string
+		limit        int
+		inPlay       bool
+		preEvent     bool
+		from, to     string
 	)
 
 	cmd := &cobra.Command{
 		Use:     "markets",
 		Short:   "List events that currently have prices",
 		Aliases: []string{"events"},
-		Long: `List the events the feed is currently pricing.
+		Long: `List the events the feed is currently pricing (GET /v2/events/).
 
-The v2 REST API has no event-listing endpoint — discovery happens over the
-WebSocket. This command connects, drains the initial snapshot up to the sync
-marker, prints the events, and disconnects.
-
-The snapshot is not the full fixture list: it holds only events that currently
-have live prices.
+This is not the full fixture list: it holds only events that currently have
+prices. Sport, competition, in-play status and start window are filtered by
+the API; --search is matched locally while paging.
 
   magicmarkets markets --sport fb --limit 20
+  magicmarkets markets --sport fb --from 2026-06-15 --to 2026-06-16
   magicmarkets markets --search arsenal
   magicmarkets markets --in-play`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			c := ctx(cmd)
-
-			stream, err := a.Stream(c)
+			client, err := a.Client()
 			if err != nil {
 				return err
 			}
-			defer stream.Close()
+			c := ctx(cmd)
 
-			events, err := stream.Snapshot(c, timeout)
-			if err != nil {
-				// A partial snapshot is still worth printing.
-				if len(events) == 0 {
-					return err
-				}
-				a.printer.Warnf("warning: snapshot incomplete: %v\n", err)
+			f := magicmarkets.EventFilter{
+				Sport:         sports,
+				CompetitionID: competitions,
+				Lang:          a.cfg.Lang,
+			}
+			switch {
+			case inPlay && preEvent:
+				return fmt.Errorf("--in-play and --pre-event are mutually exclusive")
+			case inPlay:
+				f.IRStatus = magicmarkets.IRInRunning
+			case preEvent:
+				f.IRStatus = magicmarkets.IRPreEvent
+			}
+			if f.StartFrom, err = parseWhen("--from", from); err != nil {
+				return err
+			}
+			if f.StartTo, err = parseWhen("--to", to); err != nil {
+				return err
 			}
 
-			events = filterEvents(events, sports, search, inPlay)
-			sort.Slice(events, func(i, j int) bool {
-				if !events[i].StartTime.Equal(events[j].StartTime) {
-					return events[i].StartTime.Before(events[j].StartTime)
+			needle := strings.ToLower(search)
+			pageSize := magicmarkets.MaxMarketPage
+			if needle == "" && limit > 0 {
+				pageSize = limit + 1
+			}
+			var (
+				events    []magicmarkets.StreamEvent
+				truncated bool
+			)
+			err = client.EachEvent(c, f, pageSize, "", func(e magicmarkets.StreamEvent) bool {
+				if needle != "" && !eventMatches(e, needle) {
+					return true
 				}
-				return events[i].EventID < events[j].EventID
+				if limit > 0 && len(events) == limit {
+					truncated = true
+					return false
+				}
+				events = append(events, e)
+				return true
 			})
-
-			truncated := false
-			if limit > 0 && len(events) > limit {
-				events = events[:limit]
-				truncated = true
+			if err != nil {
+				return err
 			}
+
+			sort.SliceStable(events, func(i, j int) bool {
+				return events[i].StartTime.Before(events[j].StartTime)
+			})
 
 			if a.printer.JSON {
 				return a.printer.Emit(events)
@@ -99,11 +122,30 @@ have live prices.
 
 	fl := cmd.Flags()
 	fl.StringSliceVar(&sports, "sport", nil, "only these sport codes, e.g. fb,tennis")
+	fl.IntSliceVar(&competitions, "competition", nil, "only these competition IDs (requires --sport)")
 	fl.StringVar(&search, "search", "", "case-insensitive match on event, team or competition name")
 	fl.IntVar(&limit, "limit", 50, "maximum events to print (0 for no limit)")
-	fl.DurationVar(&timeout, "timeout", 30*time.Second, "how long to wait for the snapshot")
 	fl.BoolVar(&inPlay, "in-play", false, "only events that are in play")
+	fl.BoolVar(&preEvent, "pre-event", false, "only events that have not started")
+	fl.StringVar(&from, "from", "", "only events starting at or after this time (RFC 3339 or YYYY-MM-DD, UTC)")
+	fl.StringVar(&to, "to", "", "only events starting before this time (RFC 3339 or YYYY-MM-DD, UTC)")
+	fl.Duration("timeout", 30*time.Second, "unused")
+	_ = fl.MarkDeprecated("timeout", "events are now read over REST; the request timeout is MAGICMARKETS_TIMEOUT")
 	return cmd
+}
+
+// parseWhen accepts an RFC 3339 instant or a bare UTC date.
+func parseWhen(flag, v string) (time.Time, error) {
+	if v == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.DateOnly, v); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("%s: want RFC 3339 (2026-06-15T15:00:00Z) or a date (2026-06-15), got %q", flag, v)
 }
 
 // eventName renders a feed event, preferring the home/away pair.
@@ -118,32 +160,6 @@ func eventName(e magicmarkets.StreamEvent) string {
 		return fmt.Sprintf("(%d runners)", len(e.Teams))
 	}
 	return "-"
-}
-
-// filterEvents narrows a snapshot by sport, free text, and in-play status.
-func filterEvents(events []magicmarkets.StreamEvent, sports []string, search string, inPlay bool) []magicmarkets.StreamEvent {
-	wanted := make(map[string]bool, len(sports))
-	for _, s := range sports {
-		wanted[strings.ToLower(strings.TrimSpace(s))] = true
-	}
-	needle := strings.ToLower(search)
-
-	out := make([]magicmarkets.StreamEvent, 0, len(events))
-	for _, e := range events {
-		if len(wanted) > 0 && !wanted[strings.ToLower(e.Sport)] {
-			continue
-		}
-		// "pre_event" is the not-yet-started status; anything else with a
-		// status set is live or finished.
-		if inPlay && (e.IRStatus == "" || e.IRStatus == "pre_event") {
-			continue
-		}
-		if needle != "" && !eventMatches(e, needle) {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
 }
 
 // eventMatches reports whether any display field of e contains needle, which
@@ -165,59 +181,55 @@ func eventMatches(e magicmarkets.StreamEvent, needle string) bool {
 
 func (a *App) newOffersCmd() *cobra.Command {
 	var (
-		market  string
-		timeout time.Duration
-		limit   int
-		depth   int
+		markets      []string
+		betTypes     []string
+		minLiquidity float64
+		limit        int
+		depth        int
 	)
 
 	cmd := &cobra.Command{
-		Use:   "offers <sport> <event-id>",
-		Short: "List the priced bet types on an event",
-		Long: `Register an event on the stream and print its offer snapshot.
+		Use:   "offers <sport> <event-id>...",
+		Short: "List the priced bet types on one or more events",
+		Long: `Print the offers on one or more events of a sport (GET /v2/offers/).
 
-Each offer covers one (sport, event_id, bet_type) triple. The bet_type string
-fully identifies the market side, so back and lay on the same selection appear
-as two separate rows.
+Each offer covers one (event_id, bet_type) pair. The bet_type string fully
+identifies the market side, so back and lay on the same selection appear as
+two separate rows.
 
 Copy a bet_type straight from this output into ` + "`magicmarkets betslip create`" + ` — it
 never needs to be constructed by hand.
 
+Prices can trail the live market by a few seconds. Use ` + "`magicmarkets stream --register`" + `
+when every tick matters.
+
   magicmarkets offers fb 2026-06-15,1001,2002
-  magicmarkets offers fb 2026-06-15,1001,2002 --market ah --depth 3`,
-		Args: cobra.ExactArgs(2),
+  magicmarkets offers fb 2026-06-15,1001,2002 --market ah --depth 3
+  magicmarkets offers fb 2026-06-15,1001,2002 2026-06-15,1003,2004 --min-liquidity 500
+  magicmarkets offers fb 2026-06-15,1001,2002 --bet-type for,ah,h,-4`,
+		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			sport, eventID := args[0], args[1]
-			c := ctx(cmd)
-
-			stream, err := a.Stream(c)
-			if err != nil {
-				return err
-			}
-			defer stream.Close()
-
-			// Drain the initial snapshot first: register_event's reply cannot
-			// be told apart from the opening dump otherwise.
-			if _, err := stream.Snapshot(c, timeout); err != nil {
-				return fmt.Errorf("waiting for initial sync: %w", err)
-			}
-
-			offers, err := stream.CollectOffers(c, sport, eventID, timeout)
+			sport, eventIDs := args[0], args[1:]
+			client, err := a.Client()
 			if err != nil {
 				return err
 			}
 
-			if market != "" {
-				filtered := offers[:0:0]
-				for _, o := range offers {
-					if strings.EqualFold(o.MarketType, market) {
-						filtered = append(filtered, o)
-					}
+			offers, err := client.AllOffers(ctx(cmd), magicmarkets.OfferFilter{
+				Sport:        sport,
+				EventID:      eventIDs,
+				BetType:      betTypes,
+				MarketType:   markets,
+				MinLiquidity: minLiquidity,
+			})
+			if err != nil {
+				return err
+			}
+
+			sort.SliceStable(offers, func(i, j int) bool {
+				if offers[i].EventID != offers[j].EventID {
+					return offers[i].EventID < offers[j].EventID
 				}
-				offers = filtered
-			}
-
-			sort.Slice(offers, func(i, j int) bool {
 				if offers[i].MarketType != offers[j].MarketType {
 					return offers[i].MarketType < offers[j].MarketType
 				}
@@ -232,36 +244,46 @@ never needs to be constructed by hand.
 				return a.printer.Emit(offers)
 			}
 			if len(offers) == 0 {
-				a.printer.Printf("No offers — the feed has no prices for %s %s.\n", sport, eventID)
+				a.printer.Printf("No offers — the feed has no matching prices for %s %s.\n", sport, strings.Join(eventIDs, " "))
 				return nil
 			}
 
+			multi := len(eventIDs) > 1
+			header := []string{"BET TYPE", "MARKET", "IR", "PRICES (stake @ price)", "TOTAL"}
+			if multi {
+				header = append([]string{"EVENT ID"}, header...)
+			}
 			rows := make([][]string, 0, len(offers))
 			for _, o := range offers {
 				levels := o.PriceList
 				if depth > 0 && len(levels) > depth {
 					levels = levels[:depth]
 				}
-				rows = append(rows, []string{
+				row := []string{
 					o.BetType,
 					dash(o.MarketType),
 					boolMark(o.InRunning),
 					formatLevels(levels),
 					money(totalAvailable(o.PriceList)),
-				})
+				}
+				if multi {
+					row = append([]string{o.EventID}, row...)
+				}
+				rows = append(rows, row)
 			}
-			return a.printer.Table(
-				[]string{"BET TYPE", "MARKET", "IR", "PRICES (stake @ price)", "TOTAL"},
-				rows,
-			)
+			return a.printer.Table(header, rows)
 		},
 	}
 
 	fl := cmd.Flags()
-	fl.StringVar(&market, "market", "", "only this market type, e.g. ah, ahou, 1x2")
-	fl.DurationVar(&timeout, "timeout", 30*time.Second, "how long to wait for the snapshot")
+	fl.StringSliceVar(&markets, "market", nil, "only these market types, e.g. ah,ou")
+	// bet_type values contain commas, so each --bet-type is taken verbatim.
+	fl.StringArrayVar(&betTypes, "bet-type", nil, "only this exact bet type (repeatable), e.g. for,ah,h,-4")
+	fl.Float64Var(&minLiquidity, "min-liquidity", 0, "only markets with at least this much USDT available across all prices")
 	fl.IntVar(&limit, "limit", 0, "maximum offers to print (0 for no limit)")
 	fl.IntVar(&depth, "depth", 3, "price levels to show per offer (0 for all)")
+	fl.Duration("timeout", 30*time.Second, "unused")
+	_ = fl.MarkDeprecated("timeout", "offers are now read over REST; the request timeout is MAGICMARKETS_TIMEOUT")
 	return cmd
 }
 

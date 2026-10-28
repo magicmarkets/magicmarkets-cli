@@ -11,7 +11,6 @@ import (
 // developer's real key cannot leak into an assertion.
 var magicmarketsVars = []string{
 	"MAGICMARKETS_API_KEY", "MAGICMARKETS_APIKEY", "MAGICMARKETS_API_KEY",
-	"MAGICMARKETS_ACCESS_TOKEN", "MAGICMARKETS_BEARER_TOKEN",
 	"MAGICMARKETS_OAUTH_ISSUER", "MAGICMARKETS_OAUTH_CLIENT_ID", "MAGICMARKETS_OAUTH_PROXY_SECRET",
 	"MAGICMARKETS_MCP_PUBLIC_URL",
 	"MAGICMARKETS_API_URL", "MAGICMARKETS_BASE_URL", "MAGICMARKETS_WS_URL",
@@ -97,10 +96,17 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
-func TestRequireAuthAcceptsAccessToken(t *testing.T) {
-	cfg := &Config{AccessToken: "oauth-tok"}
-	if err := cfg.RequireAuth(); err != nil {
-		t.Fatalf("RequireAuth with access token: %v", err)
+func TestLoadIgnoresAccessTokenEnv(t *testing.T) {
+	isolate(t)
+	t.Setenv("MAGICMARKETS_ACCESS_TOKEN", "oauth-tok")
+	t.Setenv("MAGICMARKETS_BEARER_TOKEN", "oauth-tok")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.RequireAuth(); err == nil {
+		t.Fatal("RequireAuth should fail when only an OAuth access token is set")
 	}
 }
 

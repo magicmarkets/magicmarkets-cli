@@ -36,6 +36,11 @@ Watch for endpoints whose response does not follow the common pattern:
 
 - `GET /v2/heartbeats/` wraps its data under a `heartbeats` key; every other
   list endpoint returns a flat array.
+- `GET /v2/events/` and `GET /v2/offers/` page by cursor (`after`), not page
+  number, and `/v2/offers/` takes at most 20 `event_id`s per request
+  (`AllOffers` batches). Market discovery (`markets`, `offers`, the MCP
+  `list_events` / `list_event_offers` tools) uses these; the WebSocket is
+  only for live tracking (`magicmarkets stream`).
 - `POST /v2/orders/{id}/close/` always returns `data: null`. Re-read the order
   to show its final state.
 - `POST /v2/betslips/{id}/refresh/` has no documented response body, so
@@ -88,8 +93,7 @@ client_ids, in-flight login state, and one-time codes are instead sealed
 (AES-256-GCM) self-contained tokens — see `oauthcrypto.go`. Every replica
 must share `MAGICMARKETS_OAUTH_PROXY_SECRET` or a request landing on a
 different replica than the one that minted a token can't decode it. Stdio
-still uses `MAGICMARKETS_API_KEY` or `MAGICMARKETS_ACCESS_TOKEN` in the
-process environment.
+uses `MAGICMARKETS_API_KEY` in the process environment.
 
 ## Repeatable flags that hold event IDs use StringArrayVar, not StringSliceVar
 

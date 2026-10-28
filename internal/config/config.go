@@ -1,9 +1,9 @@
 // Package config loads magicmarkets-cli configuration from .env files and the
 // environment.
 //
-// The Magic Markets v2 API authenticates with an X-Api-Key header or an OAuth
-// Bearer access token. There is no request signing. The WebSocket stream
-// accepts the same credentials as REST.
+// The CLI and stdio MCP authenticate with an X-Api-Key header. HTTP MCP
+// accepts that key or an OAuth Bearer token on each request. There is no
+// request signing. The WebSocket stream accepts the same credentials as REST.
 package config
 
 import (
@@ -27,10 +27,6 @@ type Config struct {
 	// APIKey is the X-Api-Key value. Created at magicmarkets.com under
 	// Settings → API and shown only once.
 	APIKey string
-
-	// AccessToken is an OAuth Bearer token (MAGICMARKETS_ACCESS_TOKEN). Used
-	// when APIKey is empty, for CLI and stdio MCP.
-	AccessToken string
 
 	// OAuthIssuer is the Magic Markets Authorization Server, advertised by
 	// `magicmarkets mcp --http` so MCP clients can obtain a Bearer token.
@@ -137,7 +133,6 @@ func Load() (*Config, error) {
 	}
 
 	cfg.APIKey = firstEnv("MAGICMARKETS_API_KEY", "MAGICMARKETS_APIKEY", "MAGICMARKETS_API_KEY")
-	cfg.AccessToken = firstEnv("MAGICMARKETS_ACCESS_TOKEN", "MAGICMARKETS_BEARER_TOKEN")
 	cfg.OAuthIssuer = strings.TrimRight(firstEnv("MAGICMARKETS_OAUTH_ISSUER"), "/")
 	cfg.OAuthClientID = firstEnv("MAGICMARKETS_OAUTH_CLIENT_ID")
 	cfg.OAuthProxySecret = firstEnv("MAGICMARKETS_OAUTH_PROXY_SECRET")
@@ -198,18 +193,17 @@ func parseBool(v string) (bool, error) {
 	}
 }
 
-// RequireAuth returns an actionable error when neither an API key nor an
-// OAuth access token is configured.
+// RequireAuth returns an actionable error when no API key is configured.
+// CLI and stdio MCP have no per-request credential; HTTP MCP does not use this.
 func (c *Config) RequireAuth() error {
-	if c.APIKey != "" || c.AccessToken != "" {
+	if c.APIKey != "" {
 		return nil
 	}
 	return fmt.Errorf("no credentials configured\n\n" +
-		"Set MAGICMARKETS_API_KEY or MAGICMARKETS_ACCESS_TOKEN in the environment or in one of:\n" +
+		"Set MAGICMARKETS_API_KEY in the environment or in one of:\n" +
 		"  ./.env\n  ~/.magicmarkets/.env\n  ~/.env\n\n" +
 		"Create a key at magicmarkets.com under Settings → API " +
-		"(it is shown only once), or obtain an OAuth access token from " +
-		DefaultOAuthIssuer + ".")
+		"(it is shown only once).")
 }
 
 // RequireKey is [Config.RequireAuth].
@@ -227,9 +221,6 @@ func redactSecret(v string) string {
 
 // RedactedKey returns the API key with all but the last 4 characters masked.
 func (c *Config) RedactedKey() string { return redactSecret(c.APIKey) }
-
-// RedactedAccessToken returns the OAuth token with all but the last 4 characters masked.
-func (c *Config) RedactedAccessToken() string { return redactSecret(c.AccessToken) }
 
 // DeriveWSURL turns an https REST base into its wss stream endpoint.
 //

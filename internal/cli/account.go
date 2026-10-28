@@ -35,7 +35,6 @@ handshake without a useful error.`,
 				"ws_url":       a.cfg.WSURL,
 				"lang":         a.cfg.Lang,
 				"api_key":      a.cfg.RedactedKey(),
-				"access_token": a.cfg.RedactedAccessToken(),
 				"oauth_issuer": a.cfg.OAuthIssuer,
 				"basic_auth":   a.cfg.BasicAuth != "",
 				"env_files":    a.cfg.Loaded,
@@ -44,7 +43,7 @@ handshake without a useful error.`,
 
 			// Verify only when a credential is present, so `status` stays useful as a
 			// way to diagnose a missing key.
-			if a.cfg.APIKey == "" && a.cfg.AccessToken == "" {
+			if a.cfg.APIKey == "" {
 				result["authenticated"] = false
 				result["error"] = "no credentials configured"
 			} else {
@@ -81,7 +80,6 @@ handshake without a useful error.`,
 				{"ws url", a.cfg.WSURL},
 				{"lang", a.cfg.Lang},
 				{"api key", a.cfg.RedactedKey()},
-				{"access token", a.cfg.RedactedAccessToken()},
 				{"oauth issuer", a.cfg.OAuthIssuer},
 				{"basic auth", basicAuthStatus(a.cfg.BasicAuth)},
 				{"env files", envFiles},

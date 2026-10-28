@@ -38,7 +38,7 @@ func TestClientSendsMagicMetadataJWTAndSessionForBearer(t *testing.T) {
 	}))
 	t.Cleanup(firebaseExchange.Close)
 
-	identity := stubIdentityToolkit(t, "me-id-token")
+	identity := stubIdentityToolkit(t, validIDToken)
 
 	var gotKey, gotJWT, gotSession string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,11 +55,11 @@ func TestClientSendsMagicMetadataJWTAndSessionForBearer(t *testing.T) {
 	if err := c.VerifyKey(context.Background()); err != nil {
 		t.Fatalf("VerifyKey: %v", err)
 	}
-	if gotJWT != "me-id-token" {
-		t.Errorf("magic-metadata-jwt = %q, want me-id-token", gotJWT)
+	if gotJWT != validIDToken {
+		t.Errorf("magic-metadata-jwt = %q, want the redeemed ID token", gotJWT)
 	}
-	if gotSession != "m-5-user-uuid" {
-		t.Errorf("session = %q, want m-5-user-uuid", gotSession)
+	if gotSession != validSession("5") {
+		t.Errorf("session = %q, want %s", gotSession, validSession("5"))
 	}
 	if gotKey != "" {
 		t.Errorf("X-Api-Key = %q, want empty", gotKey)

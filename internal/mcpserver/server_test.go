@@ -24,6 +24,7 @@ import (
 // unless trading was explicitly enabled.
 var tradingTools = []string{
 	"create_betslip",
+	"close_betslip",
 	"place_order",
 	"close_order",
 	"close_all_orders",
@@ -456,6 +457,75 @@ func TestHTTPProtectedResourceMetadata(t *testing.T) {
 	}
 }
 
+func TestHTTPServerCard(t *testing.T) {
+	s := New(nil, &config.Config{
+		APIURL: "https://example.invalid/v2",
+	}, Options{Version: "test", PublicURL: "https://mcp.example.test"})
+	ts := httptest.NewServer(s.httpHandler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + serverCardPath)
+	if err != nil {
+		t.Fatalf("GET %s: %v", serverCardPath, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	if got["name"] != "com.magicmarkets/mcp" {
+		t.Errorf("name = %v, want com.magicmarkets/mcp", got["name"])
+	}
+	if got["websiteUrl"] != "https://mcp.example.test" {
+		t.Errorf("websiteUrl = %v, want https://mcp.example.test (from Options.PublicURL)", got["websiteUrl"])
+	}
+	remotes, _ := got["remotes"].([]any)
+	if len(remotes) != 1 {
+		t.Fatalf("remotes = %v, want exactly one entry", got["remotes"])
+	}
+	remote, _ := remotes[0].(map[string]any)
+	if remote["url"] != "https://mcp.example.test/mcp" {
+		t.Errorf("remotes[0].url = %v, want https://mcp.example.test/mcp (from Options.PublicURL)", remote["url"])
+	}
+}
+
+// TestHTTPServerCardFallsBackToRequestHost mirrors how OAuth metadata derives
+// its issuer when PublicURL is unset — see publicBase.
+func TestHTTPServerCardFallsBackToRequestHost(t *testing.T) {
+	s := newTestHTTPServer(t)
+	ts := httptest.NewServer(s.httpHandler())
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + serverCardPath)
+	if err != nil {
+		t.Fatalf("GET %s: %v", serverCardPath, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	remotes, _ := got["remotes"].([]any)
+	remote, _ := remotes[0].(map[string]any)
+	if remote["url"] != ts.URL+HTTPPath {
+		t.Errorf("remotes[0].url = %v, want %s (request host)", remote["url"], ts.URL+HTTPPath)
+	}
+}
+
 type bearerTransport struct {
 	base  http.RoundTripper
 	token string
@@ -516,6 +586,9 @@ func (t hostRedirectTransport) RoundTrip(req *http.Request) (*http.Response, err
 // goes out.
 func TestHTTPGetExchangeRatesResolvesBearerViaFirebaseTokenExchange(t *testing.T) {
 	accessToken := fakeAccessToken("user-uuid")
+	// An ID token carrying the claims the API requires — see magicmarkets.checkMagicClaims.
+	idToken := "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(
+		[]byte(`{"uuid":"0b6f1c9e-3a52-4d0c-9b7e-2f7a1c3d4e5f","tenant":"magicmarkets","iat":1761600000}`)) + ".sig"
 	var meCalls int
 	var gotJWT, gotSession, gotKey string
 	mux := http.NewServeMux()
@@ -529,7 +602,7 @@ func TestHTTPGetExchangeRatesResolvesBearerViaFirebaseTokenExchange(t *testing.T
 	})
 	mux.HandleFunc("/v1/accounts:signInWithCustomToken", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"idToken":"me-jwt"}`))
+		_, _ = w.Write([]byte(`{"idToken":"` + idToken + `"}`))
 	})
 	mux.HandleFunc("/xrates/", func(w http.ResponseWriter, r *http.Request) {
 		gotJWT = r.Header.Get(magicmarkets.MagicMetadataJWTHeader)
@@ -575,11 +648,11 @@ func TestHTTPGetExchangeRatesResolvesBearerViaFirebaseTokenExchange(t *testing.T
 	if res.IsError {
 		t.Fatalf("get_exchange_rates isError: %s", toolText(t, res))
 	}
-	if gotJWT != "me-jwt" {
-		t.Errorf("upstream magic-metadata-jwt = %q, want me-jwt", gotJWT)
+	if gotJWT != idToken {
+		t.Errorf("upstream magic-metadata-jwt = %q, want the redeemed ID token", gotJWT)
 	}
-	if gotSession != "m-7-user-uuid" {
-		t.Errorf("upstream session = %q, want m-7-user-uuid", gotSession)
+	if want := "m-7-0b6f1c9e-3a52-4d0c-9b7e-2f7a1c3d4e5f-1761600000"; gotSession != want {
+		t.Errorf("upstream session = %q, want %s", gotSession, want)
 	}
 	if gotKey != "" {
 		t.Errorf("upstream X-Api-Key = %q, want empty", gotKey)
@@ -692,5 +765,138 @@ func TestToolNamesMatchesRegistration(t *testing.T) {
 	got := s.ToolNames()
 	if len(got) != len(readOnlyTools) {
 		t.Fatalf("ToolNames() = %v, want %d read-only tools", got, len(readOnlyTools))
+	}
+}
+
+func TestHTTPListEventsFiltersOnServerAndPages(t *testing.T) {
+	var queries []url.Values
+	session := connectHTTPSession(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/events/" {
+			t.Errorf("path = %q, want /events/ — discovery must not need the stream", r.URL.Path)
+		}
+		queries = append(queries, r.URL.Query())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","data":[
+			{"event_type":"normal","sport":"fb","event_id":"2026-06-15,1,2","competition_id":7,"home":"Arsenal","away":"Chelsea","ir_status":"pre_event"},
+			{"event_type":"normal","sport":"fb","event_id":"2026-06-15,3,4","home":"Spurs","away":"Everton","ir_status":"pre_event"},
+			{"event_type":"normal","sport":"fb","event_id":"2026-06-15,5,6","home":"Leeds","away":"Wolves","ir_status":"pre_event"}
+		]}`))
+	})
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_events", Arguments: map[string]any{
+		"sport":        "fb",
+		"pre_event":    true,
+		"starts_after": "2026-06-15T00:00:00Z",
+		"limit":        2,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("list_events isError: %s", toolText(t, res))
+	}
+	q := queries[0]
+	if q.Get("sport") != "fb" || q.Get("ir_status") != "pre_event" || q.Get("start_time_from") != "2026-06-15T00:00:00Z" || q.Get("limit") != "3" {
+		t.Errorf("query = %v", q)
+	}
+	got := structuredObject(t, res)
+	if got["count"] != float64(2) || got["next_after"] != "fb,2026-06-15,3,4" {
+		t.Errorf("count = %v, next_after = %v; want 2 and the last returned event", got["count"], got["next_after"])
+	}
+	first := got["events"].([]any)[0].(map[string]any)
+	if first["competition_id"] != float64(7) {
+		t.Errorf("first event = %v, want competition_id 7", first)
+	}
+}
+
+func TestHTTPListEventsSearchCursorSkipsNonMatches(t *testing.T) {
+	session := connectHTTPSession(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","data":[
+			{"sport":"fb","event_id":"a","home":"Arsenal","away":"Chelsea"},
+			{"sport":"fb","event_id":"b","home":"Spurs","away":"Everton"},
+			{"sport":"fb","event_id":"c","home":"Arsenal U21","away":"Leeds"}
+		]}`))
+	})
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_events", Arguments: map[string]any{
+		"search": "arsenal",
+		"limit":  1,
+	}})
+	if err != nil || res.IsError {
+		t.Fatalf("list_events: %v %s", err, toolText(t, res))
+	}
+	got := structuredObject(t, res)
+	// The second match was found but not returned, so paging resumes after
+	// the last event actually consumed — b — and c comes back next time.
+	if got["count"] != float64(1) || got["next_after"] != "fb,b" {
+		t.Errorf("count = %v, next_after = %v; want 1 and fb,b", got["count"], got["next_after"])
+	}
+}
+
+func TestHTTPListEventsRejectsBadInstant(t *testing.T) {
+	session := connectHTTPSession(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("request sent for invalid input")
+	})
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_events", Arguments: map[string]any{
+		"starts_after": "tomorrow",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("want isError for a non-RFC 3339 starts_after")
+	}
+}
+
+func TestHTTPListEventOffersAcrossEvents(t *testing.T) {
+	var q url.Values
+	session := connectHTTPSession(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/offers/" {
+			t.Errorf("path = %q, want /offers/", r.URL.Path)
+		}
+		q = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","data":[
+			{"sport":"fb","event_id":"2026-06-15,1,2","bet_type":"for,ah,h,-4","market_type":"ah","price_list":[{"effective":{"price":2.0,"min":null,"max":["USDT",500]}}]},
+			{"sport":"fb","event_id":"2026-06-15,3,4","bet_type":"for,h","market_type":"wdw","price_list":[{"effective":{"price":1.5,"min":null,"max":["USDT",900]}}]}
+		]}`))
+	})
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_event_offers", Arguments: map[string]any{
+		"sport":         "fb",
+		"event_id":      "2026-06-15,1,2",
+		"event_ids":     []string{"2026-06-15,1,2", "2026-06-15,3,4"},
+		"market_type":   "ah,wdw",
+		"bet_types":     []string{"for,ah,h,-4", "for,h"},
+		"min_liquidity": 250,
+	}})
+	if err != nil || res.IsError {
+		t.Fatalf("list_event_offers: %v %s", err, toolText(t, res))
+	}
+	if ids := q["event_id"]; len(ids) != 2 {
+		t.Errorf("event_id = %q, want the two distinct events, each verbatim", ids)
+	}
+	if bt := q["bet_type"]; len(bt) != 2 || bt[0] != "for,ah,h,-4" {
+		t.Errorf("bet_type = %q", bt)
+	}
+	if q.Get("min_liquidity") != "250" || len(q["market_type"]) != 2 {
+		t.Errorf("query = %v", q)
+	}
+	got := structuredObject(t, res)
+	offers := got["offers"].([]any)
+	if len(offers) != 2 || offers[1].(map[string]any)["event_id"] != "2026-06-15,3,4" {
+		t.Errorf("offers = %v, want each tagged with its event_id", offers)
+	}
+}
+
+func TestHTTPListEventOffersRequiresEvent(t *testing.T) {
+	session := connectHTTPSession(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("request sent without an event")
+	})
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_event_offers", Arguments: map[string]any{"sport": "fb"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("want isError without event_id or event_ids")
 	}
 }

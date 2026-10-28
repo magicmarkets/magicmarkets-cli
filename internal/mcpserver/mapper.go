@@ -1,7 +1,9 @@
 package mcpserver
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"magicmarkets-cli/internal/magicmarkets"
@@ -263,6 +265,7 @@ func eventFromStream(e magicmarkets.StreamEvent) event {
 		EventID:         e.EventID,
 		EventType:       e.EventType,
 		EventName:       e.EventName,
+		CompetitionID:   e.CompetitionID,
 		CompetitionName: e.CompetitionName,
 		Country:         e.CompetitionCountry,
 		IRStatus:        e.IRStatus,
@@ -279,6 +282,7 @@ func eventFromStream(e magicmarkets.StreamEvent) event {
 
 func offerFromStream(o magicmarkets.Offer) offer {
 	return offer{
+		EventID:    o.EventID,
 		BetType:    o.BetType,
 		MarketType: o.MarketType,
 		InRunning:  o.InRunning,
@@ -355,6 +359,61 @@ func (in listOrdersInput) orderFilter() magicmarkets.OrderFilter {
 		DateFrom:  in.DateFrom,
 		DateTo:    in.DateTo,
 		Search:    in.Search,
+	}
+}
+
+func (in listEventsInput) eventFilter(lang string) (magicmarkets.EventFilter, error) {
+	f := magicmarkets.EventFilter{
+		Sport:         parseCSV(in.Sport),
+		CompetitionID: in.CompetitionID,
+		Lang:          lang,
+	}
+	switch {
+	case in.InPlay && in.PreEvent:
+		return f, fmt.Errorf("in_play and pre_event are mutually exclusive")
+	case in.InPlay:
+		f.IRStatus = magicmarkets.IRInRunning
+	case in.PreEvent:
+		f.IRStatus = magicmarkets.IRPreEvent
+	}
+	var err error
+	if f.StartFrom, err = parseInstant("starts_after", in.StartsAfter); err != nil {
+		return f, err
+	}
+	if f.StartTo, err = parseInstant("starts_before", in.StartsBefore); err != nil {
+		return f, err
+	}
+	return f, nil
+}
+
+func parseInstant(field, v string) (time.Time, error) {
+	if v == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s must be RFC 3339, e.g. 2026-06-15T00:00:00Z: %w", field, err)
+	}
+	return t, nil
+}
+
+// offerFilter merges event_id and event_ids, dropping duplicates.
+func (in listEventOffersInput) offerFilter() magicmarkets.OfferFilter {
+	seen := map[string]bool{}
+	var ids []string
+	for _, id := range append([]string{in.EventID}, in.EventIDs...) {
+		id = strings.TrimSpace(id)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return magicmarkets.OfferFilter{
+		Sport:        in.Sport,
+		EventID:      ids,
+		BetType:      in.BetTypes,
+		MarketType:   parseCSV(in.MarketType),
+		MinLiquidity: in.MinLiquidity,
 	}
 }
 

@@ -1,6 +1,6 @@
 # magicmarkets-cli
 
-A command-line interface for the [Magic Markets](https://magicmarkets.com) v2 API — stream live sports prices, quote selections, place and manage orders, and inspect your position. The same API is also available as MCP tools, over stdio (a client launches `magicmarkets mcp` as a subprocess) or the streamable HTTP transport on localhost.
+A command-line interface for the [Magic Markets](https://magicmarkets.com) v2 API — stream live sports prices, quote selections, place and manage orders, and inspect your position. The same API is also available as MCP tools: the easiest path is the hosted, OAuth-authenticated endpoint at `https://magicmarkets.com/mcp` — no install required. This binary also serves the same tools locally, over stdio (a client launches `magicmarkets mcp` as a subprocess) or the streamable HTTP transport on localhost.
 
 Single static binary, authenticated with one API key. No request signing, no private keys.
 
@@ -108,8 +108,7 @@ Resolved in this order, first match winning:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MAGICMARKETS_API_KEY` | — | API key (`X-Api-Key`). Required unless `MAGICMARKETS_ACCESS_TOKEN` is set |
-| `MAGICMARKETS_ACCESS_TOKEN` | — | OAuth Bearer token for CLI/stdio. HTTP MCP still takes the token per request |
+| `MAGICMARKETS_API_KEY` | — | API key (`X-Api-Key`) for the CLI and stdio MCP. HTTP MCP takes the key per request instead |
 | `MAGICMARKETS_OAUTH_ISSUER` | `https://magicmarkets.com/api/auth` | Upstream AS that `mcp --http` proxies `/authorize` and `/token` to, and that `POST /oauth2/firebase-token` is resolved against for a Bearer credential — see [Authentication](#authentication) |
 | `MAGICMARKETS_SESSION_GROUP_ID` | — | Environment-specific id from Magic Markets, used to build the `session` value an OAuth Bearer credential resolves to. No safe default — required wherever a Bearer credential is expected |
 | `MAGICMARKETS_FIREBASE_WEB_API_KEY` | — | Firebase Web API key for the Magic Markets Firebase project, used to exchange the Firebase custom token from `/oauth2/firebase-token` for a real Firebase ID token — see [Authentication](#authentication). No safe default — required wherever a Bearer credential is expected |
@@ -193,16 +192,18 @@ $ magicmarkets order place --betslip bs-abc123 --price 2.10 --stake 50
 | Command | Purpose |
 |---|---|
 | `magicmarkets markets` | Events that currently have prices |
-| `magicmarkets offers <sport> <event-id>` | Priced bet types on an event |
+| `magicmarkets offers <sport> <event-id>...` | Priced bet types on one or more events |
 | `magicmarkets stream` | Tail the live price and account feed |
 
-The v2 REST API has **no event-listing endpoint** — discovery happens over the WebSocket. These commands connect, read the snapshot, and disconnect, so they take a few seconds.
+`markets` and `offers` are plain REST calls (`GET /v2/events/`, `GET /v2/offers/`). Sport, competition, in-play status, start window, market type, bet type and minimum liquidity are filtered by the API; `--search` is matched locally. REST offers can trail the live market by a few seconds — use `stream --register` when every tick matters.
 
 ```bash
 magicmarkets markets --sport fb,tennis --limit 20
+magicmarkets markets --sport fb --from 2026-06-15 --to 2026-06-16
 magicmarkets markets --search arsenal
 magicmarkets markets --in-play
 magicmarkets offers fb 2026-06-15,1001,2002 --market ah --depth 3
+magicmarkets offers fb 2026-06-15,1001,2002 2026-06-15,1003,2004 --min-liquidity 500
 magicmarkets stream --register fb:2026-06-15,1001,2002
 magicmarkets stream --type order,bet          # only order activity
 ```
@@ -215,6 +216,7 @@ magicmarkets stream --type order,bet          # only order activity
 | `magicmarkets betslip get <id>` | Show a betslip and its prices |
 | `magicmarkets betslip list` | Open betslip IDs (`--expand` for full detail) |
 | `magicmarkets betslip refresh <id>` | Extend expiry |
+| `magicmarkets betslip close <id>` | Close a betslip you no longer need |
 | `magicmarkets order place` | Place an order against a betslip |
 | `magicmarkets orders` / `magicmarkets order list` | List orders |
 | `magicmarkets order get <id>` | Show one order and its bets |
@@ -372,7 +374,35 @@ The same applies to every money field: `want_stake`, `stake`, `profit_loss`, `to
 
 ## MCP
 
-`magicmarkets mcp` serves the API as MCP tools, so an LLM agent can read prices and manage orders. By default it speaks stdio: an MCP client (Claude Code, Cursor, and the like) launches it as a subprocess and they exchange JSON-RPC on stdin/stdout. Pass `--http` to instead serve the MCP [streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http) on localhost — see [Serving over localhost HTTP](#serving-over-localhost-http) below.
+The v2 API is available as MCP tools, so an LLM agent can read prices and manage orders. Three ways to get them, in order of how much you need to run yourself:
+
+- **[Hosted](#hosted)** — point any OAuth-capable client at `https://magicmarkets.com/mcp`. Nothing to install or run.
+- **[stdio](#stdio)** — build `magicmarkets` and let a client (Claude Code, Cursor, and the like) launch `magicmarkets mcp` as a subprocess.
+- **[Self-hosted HTTP](#serving-over-localhost-http)** — run `magicmarkets mcp --http` yourself, e.g. to share one long-running server across several local clients.
+
+### Hosted
+
+The fastest way to connect: add `https://magicmarkets.com/mcp` as a remote MCP server. It speaks the streamable HTTP transport and OAuth, so there's no API key to copy into a client config — point at the URL and authenticate when prompted.
+
+Claude Code:
+
+```bash
+claude mcp add --transport http magicmarkets https://magicmarkets.com/mcp
+```
+
+Or in a client's MCP config:
+
+```json
+{
+  "mcpServers": {
+    "magicmarkets": {
+      "url": "https://magicmarkets.com/mcp"
+    }
+  }
+}
+```
+
+The client's OAuth flow registers itself and redirects you to a Magic Markets login — see [Authentication](#authentication) for what happens under the hood. Whether the trading tools (`place_order`, `close_order`, ...) are available depends on how this hosted instance is configured — see [What each mode exposes](#what-each-mode-exposes).
 
 ### stdio
 
@@ -417,7 +447,7 @@ magicmarkets mcp --http --addr 127.0.0.1:8383
 
 `--addr` defaults to `127.0.0.1:8383` — loopback-only, so nothing outside the machine can reach it regardless. `--http` has no TLS of its own — put it behind a reverse proxy if you expose it beyond loopback.
 
-**The server does not use `MAGICMARKETS_API_KEY`.** Each request must send the caller's credential as `X-Api-Key` **or** `Authorization: Bearer`. An API key is forwarded to the Magic Markets REST API and `/v2/stream` unchanged. A Bearer token is *not* — it's resolved first, via `POST {MAGICMARKETS_OAUTH_ISSUER}/oauth2/firebase-token`, to the credential those actually require; see [Authentication](#authentication) for the full flow and its known limitations. Stdio still takes `MAGICMARKETS_API_KEY` or `MAGICMARKETS_ACCESS_TOKEN` from the environment.
+**The server does not use `MAGICMARKETS_API_KEY`.** Each request must send the caller's credential as `X-Api-Key` **or** `Authorization: Bearer`. An API key is forwarded to the Magic Markets REST API and `/v2/stream` unchanged. A Bearer token is *not* — it's resolved first, via `POST {MAGICMARKETS_OAUTH_ISSUER}/oauth2/firebase-token`, to the credential those actually require; see [Authentication](#authentication) for the full flow and its known limitations. Stdio takes `MAGICMARKETS_API_KEY` from the environment.
 
 Point a client at the URL instead of a command:
 
@@ -445,13 +475,19 @@ The same URL accepts an OAuth access token:
 }
 ```
 
-Remote MCP hosts that speak OAuth can skip the headers map. Unauthenticated `/mcp` replies include `WWW-Authenticate` pointing at protected-resource metadata that names **this MCP host** as the Authorization Server (so Claude's Dynamic Client Registration POSTs `/register` here, not `https://magicmarkets.com/register`). This process runs its own PKCE login against `https://magicmarkets.com/api/auth` — it never forwards a downstream client's redirect_uri upstream, since the real Magic Markets AS only allowlists *this host's own* callback (`{public-url}/mcp/callback`), never Claude's or Cursor's. Set:
+Remote MCP hosts that speak OAuth can skip the headers map. Unauthenticated `/mcp` replies include `WWW-Authenticate` pointing at protected-resource metadata that names **this MCP host** as the Authorization Server (so Claude's Dynamic Client Registration POSTs `/register` here, not `https://magicmarkets.com/register`). This process runs its own PKCE login against `https://magicmarkets.com/api/auth` — it never forwards a downstream client's redirect_uri upstream, since the real Magic Markets AS only allowlists *this host's own* callback (`{public-url}/mcp/callback`), never Claude's or Cursor's. See [docs/oauth.md](docs/oauth.md) for the full proxy flow, diagrammed. Set:
 
 - `--public-url https://magicmarkets-mcp.dev-eu.kubershmuber.com` on the hosted deploy
 - `MAGICMARKETS_OAUTH_CLIENT_ID` to a client on `MAGICMARKETS_OAUTH_ISSUER` whose redirect_uris allowlist includes that host's `/mcp/callback`
 - `MAGICMARKETS_OAUTH_PROXY_SECRET` on every replica of a multi-replica deployment — the proxy keeps no server-side session state (login state and one-time codes are sealed, self-contained tokens instead), so replicas that don't share this secret can't decode each other's in-flight logins
 
+### Serving a server card
+
+`GET /mcp/server-card` answers with the [MCP server card](https://modelcontextprotocol.io) templated from [`internal/mcpserver/servercard.json`](internal/mcpserver/servercard.json) — a fixed, build-time `text/template`, not something configured per deployment. Edit that file and rebuild to change it. Its `{{.PublicURL}}` fields (`websiteUrl`, `remotes[].url`) are filled in per request from `MAGICMARKETS_MCP_PUBLIC_URL` (falling back to the incoming request's host when unset), the same value OAuth protected-resource metadata already uses.
+
 ### Enabling trading
+
+This section covers instances you run yourself — stdio or your own `--http`. On the hosted endpoint (`https://magicmarkets.com/mcp`), trading mode is fixed by how that deployment is configured, not by anything the connecting client sets.
 
 **Trading is off by default.** A fresh registration is read-only, so an agent asking to place a bet will find no `place_order` tool at all. Enable it with `MAGICMARKETS_ALLOW_TRADING=1`, **replace** the existing registration, and **restart your client**:
 
@@ -494,13 +530,13 @@ place_order
 ...
 ```
 
-Run it without the env var to see the read-only list (11 tools vs 19). `magicmarkets mcp` also logs the mode to stderr on every start, which appears in your client's MCP logs (stderr is the only place those lines can go — stdout is the JSON-RPC stream).
+Run it without the env var to see the read-only list (11 tools vs 20). `magicmarkets mcp` also logs the mode to stderr on every start, which appears in your client's MCP logs (stderr is the only place those lines can go — stdout is the JSON-RPC stream).
 
 ### What each mode exposes
 
 | Always available | Requires `MAGICMARKETS_ALLOW_TRADING` |
 |---|---|
-| `get_balance`, `get_exchange_rates`, `get_position` | `create_betslip` |
+| `get_balance`, `get_exchange_rates`, `get_position` | `create_betslip`, `close_betslip` |
 | `list_events`, `list_event_offers` | `place_order` |
 | `list_orders`, `get_order` | `close_order`, `close_all_orders` |
 | `list_betslips`, `get_betslip` | `create_heartbeat`, `refresh_heartbeat`, `cancel_heartbeat`, `list_heartbeats` |
@@ -552,7 +588,7 @@ Per account, sliding window: 100 req/s burst and 1200 req/min sustained overall,
 
 **`stream handshake failed`** — the WebSocket rejects a bad key at the HTTP handshake. Run `magicmarkets status` first; REST gives a clearer error.
 
-**`magicmarkets markets` returns nothing** — the snapshot only contains events that *currently have live prices*, not the full fixture list. Try without `--sport`, or raise `--timeout`.
+**`magicmarkets markets` returns nothing** — only events that *currently have prices* are listed, not the full fixture list. Try without `--sport` or the time window.
 
 **Betslip has no prices** — quotes arrive asynchronously. Use `--wait 5s`. If it still has none, no source is quoting that selection.
 
@@ -575,13 +611,15 @@ internal/magicmarkets/            API client — no CLI or MCP dependencies
   types.go                 wire types (Stake is a [ccy, amount] tuple)
   ticks.go                 tick schedule and price snapping
   betslips.go orders.go account.go heartbeats.go
-  stream.go                WebSocket client
+  markets.go               event and offer discovery over REST
+  stream.go                WebSocket client (live tracking only)
 internal/cli/              cobra command tree, table/JSON rendering
 internal/mcpserver/        MCP tools over stdio or localhost HTTP, same client
 internal/spec/             embedded openapi.json + reference commands
 internal/magicmarketsapi/         generated models + the contract test guarding drift
 tools/prepspec/            adapts the spec for oapi-codegen
 docs/api-reference.md      full API reference (vendored)
+docs/oauth.md              the MCP OAuth proxy and Bearer-token resolution, in depth
 ```
 
 `internal/magicmarkets` has no dependency on the CLI or MCP layers, so it is usable as a plain Go client library.
@@ -657,6 +695,7 @@ Things this codebase relies on. Breaking one should be deliberate.
 **Check the spec before inferring a shape.** `magicmarkets api show orders POST` beats guessing. Several endpoints break the common `{status, data}` pattern, and each break was a bug caught only by reading the spec:
 
 - `GET /v2/heartbeats/` wraps data under a `heartbeats` key; every other list endpoint returns a flat array.
+- `GET /v2/events/` and `GET /v2/offers/` page by cursor (`after` = the last row's `"{sport},{event_id}"` / `"{event_id},{bet_type}"`), not by page number, and `/v2/offers/` takes at most 20 events per request — `AllOffers` batches.
 - `POST /v2/orders/{id}/close/` always returns `data: null`. Re-read the order for its final state.
 - `POST /v2/betslips/{id}/refresh/` has no documented response body, so `RefreshBetslip` re-reads the betslip instead of decoding the reply.
 
@@ -674,48 +713,9 @@ Things this codebase relies on. Breaking one should be deliberate.
 
 ## Authentication
 
-This repo targets the **public v2 API**: `https://magicmarkets.com/v2`. A caller presents one of two credentials — `X-Api-Key`, or `Authorization: Bearer` with a token from `https://magicmarkets.com/api/auth` — but only the API key is what actually goes out on the wire. A Bearer token is not accepted by the v2 API or `/v2/stream` as-is; it must first be resolved, in two hops, to the `magic-metadata-jwt`/`session` pair those endpoints require:
+This repo targets the **public v2 API**: `https://magicmarkets.com/v2`. A caller presents one of two credentials — `X-Api-Key`, or `Authorization: Bearer` with a token from `https://magicmarkets.com/api/auth` — but only the API key is what actually goes out on the wire. A Bearer token is not accepted by the v2 API or `/v2/stream` as-is: it's resolved first, via a two-hop exchange through the upstream Authorization Server and Firebase, to the `magic-metadata-jwt`/`session` pair those endpoints actually require. `magicmarkets mcp --http` additionally runs its own OAuth proxy so a remote MCP client (Claude, Cursor, ...) can obtain that Bearer token in the first place without being pre-registered upstream.
 
-1. `POST {issuer}/oauth2/firebase-token` (`Authorization: Bearer <access token>`) mints a **Firebase custom token** carrying the player's real entitlements.
-2. A Firebase custom token is not itself a valid ID token — Magic Markets' own OAuth integration guide for MCP server implementers is explicit that a custom token must be redeemed for a Firebase **ID token** before it's usable. This process does that redemption itself, calling Google's Identity Toolkit REST API directly — `POST https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=<MAGICMARKETS_FIREBASE_WEB_API_KEY>` — and uses the returned `idToken` as `magic-metadata-jwt`.
-
-`GET {issuer}/me` is *not* used for any of this: it's guarded by Firebase ID-token verification, which the self-signed OAuth access token never satisfies. `internal/magicmarkets.MeResolver` (`internal/magicmarkets/meauth.go`) does both hops and caches the result; both `internal/mcpserver` and the CLI/stdio path go through the same client, so both get it automatically. `magicmarkets mcp --http` advertises OAuth protected-resource metadata so MCP hosts (Claude, Cursor, ...) can obtain a Bearer token in the first place.
-
-**Why `MAGICMARKETS_FIREBASE_WEB_API_KEY` exists:** hop 2 above is a call to *Firebase's* Identity Toolkit API, not to any Magic Markets endpoint, and Firebase requires a **Web API key** — scoped to the Magic Markets Firebase project — to identify which project's custom token is being redeemed. It is not a secret minted per-caller; it's the same project-level key any Firebase web client already embeds client-side. It has no safe default because it's project- and environment-specific (STG and prod are different Firebase projects), so — like `MAGICMARKETS_SESSION_GROUP_ID` — it must be set explicitly wherever an OAuth Bearer caller is expected, or every Bearer-authenticated call fails.
-
-```mermaid
-sequenceDiagram
-    participant Caller
-    participant Resolver as MeResolver (cache)
-    participant Issuer as Magic Markets AS
-    participant Firebase as Firebase Identity Toolkit
-    participant API as v2 API / stream
-
-    Note over Caller,API: An X-Api-Key credential skips all of this, forwarded unchanged.
-
-    Caller->>Resolver: Authorization Bearer access token
-
-    alt cache hit, MeCacheTTL is 1 minute
-        Resolver->>Resolver: reuse cached magic-metadata-jwt and session
-    else cache miss
-        Resolver->>Issuer: POST /oauth2/firebase-token<br/>Authorization Bearer access token
-        Issuer-->>Resolver: firebase_token, a Firebase custom token<br/>not yet valid as magic-metadata-jwt
-        Resolver->>Firebase: POST accounts:signInWithCustomToken<br/>key is MAGICMARKETS_FIREBASE_WEB_API_KEY, token is firebase_token
-        Firebase-->>Resolver: idToken
-        Resolver->>Resolver: cache magic-metadata-jwt as idToken<br/>session as m, group id, uuid joined by dashes<br/>uuid read from the access token's own sub claim
-    end
-
-    Resolver-->>Caller: magic-metadata-jwt, session
-    Caller->>API: REST headers magic-metadata-jwt and session<br/>stream query params jwt and token
-```
-
-### Known limitations
-
-- **This process redeems a Firebase custom token for an ID token itself, instead of that being Magic Markets' problem.** `POST /oauth2/firebase-token` could just as easily call `signInWithCustomToken` server-side and hand back a ready-to-use ID token — sparing every MCP server implementer (not just this one) from needing `MAGICMARKETS_FIREBASE_WEB_API_KEY`, a direct dependency on Google's Identity Toolkit endpoint, and knowledge of the custom-token/ID-token distinction at all. This is a client-side workaround for a gap in the Authorization Server's contract, not the intended end state — revisit once/if `/oauth2/firebase-token` returns an ID token (or the v2 API accepts a custom token directly).
-- **The cache is in-process, not shared.** `MeResolver`'s cache is a per-replica LRU (via `hashicorp/golang-lru`'s expirable variant), not the sealed, replica-independent state `internal/mcpserver/oauth.go` uses for OAuth proxy state. On a hosted, multi-replica deployment, a request routed to a different pod than a prior one just pays for one extra exchange (now two calls: `/oauth2/firebase-token` and `signInWithCustomToken`) on a cache miss — it does not fail, unlike an un-shared `MAGICMARKETS_OAUTH_PROXY_SECRET` would. This is a deliberate workaround, not the end state: a shared cache (or a documented, longer-lived credential from Magic Markets) would remove the per-replica cold-start cost entirely.
-- **The TTL and cache size are fixed consts**, not environment variables (`magicmarkets.MeCacheTTL` = 1 minute; a size of 4096 distinct access tokens) — see `internal/magicmarkets/meauth.go`. This keeps the workaround simple while the `/me` contract itself is still firming up; revisit once it's worth tuning.
-- **`MAGICMARKETS_SESSION_GROUP_ID` and `MAGICMARKETS_FIREBASE_WEB_API_KEY` have no safe default** and differ per environment — both must be set explicitly wherever an OAuth Bearer caller is expected, or every Bearer-authenticated call fails.
-- **No proactive token refresh.** Resolution is retried on every cache miss, but nothing refreshes an access token before it expires — an expired token surfaces as a failed exchange (and thus a failed tool call), the same as any other invalid credential.
+Both mechanisms, their sequence diagrams, configuration, and known limitations are in **[docs/oauth.md](docs/oauth.md)**.
 
 ## Making a change
 

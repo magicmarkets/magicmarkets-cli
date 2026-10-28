@@ -45,6 +45,8 @@ func pairs() []pair {
 		{name: "Betslip", hand: magicmarkets.Betslip{}, generated: magicmarketsapi.BetslipResponse{}},
 		{name: "ParlayLeg", hand: magicmarkets.ParlayLeg{}, generated: magicmarketsapi.ParlayLeg{}},
 		{name: "PriceLevel", hand: magicmarkets.PriceLevel{}, generated: magicmarketsapi.PriceLevel{}},
+		{name: "StreamEvent", hand: magicmarkets.StreamEvent{}, generated: magicmarketsapi.Event{}},
+		{name: "Offer", hand: magicmarkets.Offer{}, generated: magicmarketsapi.Offer{}},
 		{name: "EventInfo", hand: magicmarkets.EventInfo{}, generated: magicmarketsapi.EventInfo{}},
 		{name: "Balance", hand: magicmarkets.Balance{}, generated: magicmarketsapi.BalanceResponse{}},
 		{name: "Heartbeat", hand: magicmarkets.Heartbeat{}, generated: magicmarketsapi.HeartbeatResponse{}},

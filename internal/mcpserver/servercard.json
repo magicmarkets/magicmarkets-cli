@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.magicmarkets/mcp",
+  "title": "MagicMarkets",
+  "description": "Sports prediction markets for AI agents — live prices, quotes, orders, and positions.",
+  "version": "1.0.0",
+  "websiteUrl": "{{.PublicURL}}",
+  "repository": {
+    "url": "https://github.com/magicmarkets/magicmarkets-cli",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "{{.PublicURL}}/mcp"
+    }
+  ]
+}
